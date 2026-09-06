@@ -1,0 +1,41 @@
+# 智能分拣数据集配置 —— 训练包统一入口
+# ★ 把 root 改成你自己的数据集根目录(仅这一点必须改)
+root: "/path/to/my_sorting_data"
+
+# ---------- 目标检测 ----------
+# 方案A(推荐): 只检"货物", 属性交给分类器 -> ["goods"]
+# 方案B(端到端): 组合类别(6色×4形按需) 如:
+#   ["red_cube","red_cylinder","blue_cube","blue_cylinder","green_cube",
+#    "green_cylinder","yellow_cube","yellow_ball","black_cube","lightblue_cylinder"]
+detection_classes: ["goods"]
+
+# ---------- 属性分类器(方案A 使用; 方案B 可忽略) ----------
+attribute_datasets:
+  color:  "attributes/color"     # 子目录: red yellow blue green black lightblue
+  shape:  "attributes/shape"     # 子目录: cube cylinder ball cone triangle
+  defect: "attributes/defect"    # 子目录: clean defect
+color_classes: ["red","yellow","blue","green","black","lightblue"]
+shape_classes: ["cube","cylinder","ball","cone","triangle"]
+defect_classes: ["clean","defect"]
+
+# ---------- 划分 / 训练 ----------
+train_ratio: 0.85
+img_size: 640                    # 训练输入; 小目标密集请用 960
+epochs: 120
+batch: 16
+model: "yolov8n"                 # yolov8n / yolov8s
+
+# ---------- 增强(重点模拟现场色差与密排遮挡) ----------
+aug:
+  hsv_h: 0.05                    # 色相抖动(0.05≈±18°, 模拟色差批次)
+  hsv_s: 0.30
+  hsv_v: 0.30
+  fliplr: 0.5
+  flipud: 0.2
+  degrees: 10.0
+  translate: 0.05
+  scale: 0.3
+  mosaic: 1.0
+  close_mosaic: 20               # 最后20个epoch关闭mosaic(稳定小目标)
+  mixup: 0.1
+  erase: 0.1                     # 随机擦除模拟遮挡

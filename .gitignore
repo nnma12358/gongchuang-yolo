@@ -1,0 +1,16 @@
+# 训练产物与数据(不入库)
+__pycache__/
+*.pyc
+runs/
+exports/
+reports/
+data/*
+!data/.gitkeep
+models/*.pt
+models/*.onnx
+models/*.engine
+!models/.gitkeep
+*.log
+.DS_Store
+.venv/
+venv/

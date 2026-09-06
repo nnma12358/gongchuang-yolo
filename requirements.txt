@@ -1,0 +1,9 @@
+torch>=2.0
+torchvision>=0.15
+ultralytics>=8.1
+opencv-python>=4.5
+pyyaml>=5.4
+tqdm>=4.60
+numpy>=1.24
+onnx>=1.14
+requests>=2.28
