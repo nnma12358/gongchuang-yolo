@@ -49,8 +49,9 @@ class TinyNet(nn.Module):
         return self.head(self.features(x))
 
 
-def aug_crop(bgr):
-    """cv2 增强: 翻转/旋转/HSV(色差)/随机擦除(遮挡)"""
+def aug_crop(bgr, task="color"):
+    """cv2 增强: 翻转/旋转/HSV(色差)/随机擦除(遮挡)
+    stain 任务额外加入噪声与模糊 —— 污渍/缺陷在真实图像中表现为暗斑与失焦"""
     img = bgr
     if random.random() < 0.5:
         img = cv2.flip(img, 1)
@@ -68,12 +69,21 @@ def aug_crop(bgr):
         y0 = random.randint(0, img.shape[0] - 10)
         x0 = random.randint(0, img.shape[1] - 10)
         img[y0:y0 + 8, x0:x0 + 8] = (114, 114, 114)
+    if task == "stain":
+        if random.random() < 0.35:                      # 模拟污渍暗斑
+            h, w = img.shape[:2]
+            r = random.randint(3, max(4, min(h, w) // 5))
+            cv2.circle(img, (random.randint(r, w - r), random.randint(r, h - r)),
+                       r, (60, 50, 40), -1)
+        if random.random() < 0.25:                      # 失焦/划痕
+            img = cv2.GaussianBlur(img, (3, 3), random.uniform(0.5, 1.5))
     return img
 
 
 class AttrDataset(Dataset):
-    def __init__(self, class_dirs, train=True):
+    def __init__(self, class_dirs, train=True, task="color"):
         self.samples = []
+        self.task = task
         for idx, d in enumerate(class_dirs):
             files = sorted(glob.glob(os.path.join(d, "*.jpg")) +
                            glob.glob(os.path.join(d, "*.png")))
@@ -93,7 +103,7 @@ class AttrDataset(Dataset):
             return torch.zeros(3, IMG_SIZE, IMG_SIZE), cls
         img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
         if random.random() < 0.7:
-            img = aug_crop(img)
+            img = aug_crop(img, self.task)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         img = (img - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
         return torch.from_numpy(img.transpose(2, 0, 1)), cls
@@ -102,24 +112,31 @@ class AttrDataset(Dataset):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/dataset.yaml")
-    ap.add_argument("--task", required=True, choices=["color", "shape", "defect"])
+    ap.add_argument("--task", required=True, choices=["color", "shape", "stain", "defect"])
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--export-onnx", action="store_true", help="训练后导出 ONNX（端侧部署用）")
     args = ap.parse_args()
+    if args.task == "defect":
+        args.task = "stain"                     # 旧命名兼容：defect → stain（clean/stain/defect）
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
     root = os.path.abspath(os.path.expanduser(cfg["root"]))
-    classes = cfg[args.task + "_classes"]
-    base = os.path.join(root, cfg["attribute_datasets"][args.task])
+    # 兼容 stain_classes(比赛配置) / defect_classes(旧配置)
+    classes = cfg.get(args.task + "_classes") or cfg.get("defect_classes")
+    if not classes:
+        raise SystemExit("配置缺少 %s_classes" % args.task)
+    attr_map = dict(cfg.get("attribute_datasets") or {})
+    base = os.path.join(root, attr_map.get(args.task) or attr_map.get("defect") or ("attributes/" + args.task))
     class_dirs = [os.path.join(base, c) for c in classes]
     for d in class_dirs:
         if not os.path.isdir(d):
-            raise SystemExit("缺少类别目录: %s" % d)
+            raise SystemExit("缺少类别目录: %s（可先跑 scripts/crop_attributes.py 自动生成）" % d)
 
-    train_ds = AttrDataset(class_dirs, train=True)
-    val_ds = AttrDataset(class_dirs, train=False)
+    train_ds = AttrDataset(class_dirs, train=True, task=args.task)
+    val_ds = AttrDataset(class_dirs, train=False, task=args.task)
     print("[%s] train=%d val=%d classes=%s" % (
         args.task, len(train_ds), len(val_ds), classes))
     if len(val_ds) == 0:
@@ -167,6 +184,20 @@ def main():
 
     print("[%s] best val_acc=%.4f 模型: runs/attr/%s/best.pt" % (
         args.task, best_acc, args.task))
+    target = float((cfg.get("acceptance", {}) or {}).get(args.task + "_acc", 0) or 0)
+    if target:
+        print("赛项验收线 %s_acc ≥ %.2f → %s (实测 %.4f)" % (
+            args.task, target, "达标" if best_acc >= target else "未达标", best_acc))
+
+    if args.export_onnx:
+        model.load_state_dict(torch.load("runs/attr/%s/best.pt" % args.task, map_location="cpu"))
+        model.eval()
+        dummy = torch.randn(1, 3, IMG_SIZE, IMG_SIZE)
+        out_path = "runs/attr/%s/best.onnx" % args.task
+        torch.onnx.export(model, dummy, out_path, input_names=["input"],
+                          output_names=["logits"], opset_version=12,
+                          dynamic_axes={"input": {0: "batch"}})
+        print("ONNX 已导出: %s（端侧推理用）" % out_path)
 
 
 if __name__ == "__main__":

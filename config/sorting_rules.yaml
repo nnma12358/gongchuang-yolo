@@ -1,0 +1,31 @@
+# 储物盒与分拣规则 —— 智能分拣赛项
+# 网关（PC 调试容器 / Jetson 网关容器）按此规则执行，视觉端负责给出 (形状, 颜色, 标记)
+
+bins:
+  count: 6                # 六个单独的储物盒，标注 1–6 序号
+  capacity: 4             # 每个储物盒最多存放 4 件货物（赛项：不超过 4 个）
+  assignment: "same_shape_color_same_bin"   # 形状相同且颜色相同 → 同一个储物盒
+  order: [1, 2, 3, 4, 5, 6]                 # 新组合依次占用序号最小的空盒
+  on_full: "reject"       # 该组合对应盒已满 → 拒绝继续分拣（避免违规放置）
+
+tray:
+  size_mm: 160            # 托盘不小于 160×160mm
+  edge_height_mm: 10      # 边缘高度不小于 10mm（防货物滑落）
+  goods_size_mm: 40       # 货物尺寸在 40mm 正方形范围内
+
+cycle:                    # 分拣节拍（对应“一次只能分拣一件”）
+  one_item_at_a_time: true
+  display_hold_seconds: 3.0    # 分拣信息显示保持时间，期间拒绝下一件上报
+  require_display_ack: false   # true: 必须人工确认显示完成才放行下一件
+  drop_fault_ends_round: true  # 货物掉落（装置内/外）→ 本轮比赛结束
+
+recognition:              # 视觉端输出字段（与网关 /api/sort/event 对齐）
+  payload_example:
+    class: "prism5_4"     # 图库货物编号（形状×颜色）
+    shape: "五棱柱"
+    color: "青色"
+    marks: ["污渍"]        # 污渍 / 缺陷
+    text: ""              # 表面文字
+    qr: "SORT-TASK:T-260901"
+    confidence: 0.93
+    source: "vision"

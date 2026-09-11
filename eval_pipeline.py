@@ -55,6 +55,27 @@ def infer_shift(model, imgs_bgr, device):
     return res
 
 
+def bin_consistency(pairs):
+    """赛项规则校验：形状相同且颜色相同 → 必须落同一个储物盒（1–6 号，每盒 ≤4 件）
+    pairs: [(shape, color)] 预测序列 → 返回 (一致性, 违规列表, 盒占用)"""
+    assignment, bins, violations = {}, {}, []
+    for i, (shape, color) in enumerate(pairs):
+        key = "%s|%s" % (shape, color)
+        if key not in assignment:
+            used = sorted(bins.keys())
+            free = [n for n in range(1, 7) if n not in used]
+            if not free:
+                violations.append({"seq": i + 1, "reason": "六个储物盒已分配完", "key": key})
+                continue
+            assignment[key] = free[0]
+            bins[free[0]] = {"key": key, "count": 0}
+        no = assignment[key]
+        bins[no]["count"] += 1
+        if bins[no]["count"] > 4:
+            violations.append({"seq": i + 1, "reason": "储物盒超过 4 件", "bin": no, "key": key})
+    return (1.0 if not violations else 0.0), violations, bins
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/dataset.yaml")
@@ -66,15 +87,19 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     report = {}
-    for task in ("color", "shape", "defect"):
-        classes = cfg[task + "_classes"]
+    for task in ("color", "shape", "stain"):
+        classes = cfg.get(task + "_classes") or cfg.get("defect_classes")
+        if not classes:
+            print("[跳过] 配置缺少 %s_classes" % task)
+            continue
         model = load_model(task, len(classes), device)
         if model is None:
             print("[跳过] %s 未训练 (runs/attr/%s/best.pt)" % (task, task))
             continue
-        base = os.path.join(root, cfg["attribute_datasets"][task])
+        attr_map = cfg.get("attribute_datasets") or {}
+        base = os.path.join(root, attr_map.get(task) or attr_map.get("defect") or ("attributes/" + task))
         dirs = [os.path.join(base, c) for c in classes]
-        ds = AttrDataset(dirs, train=False)
+        ds = AttrDataset(dirs, train=False, task=task)
         if len(ds) == 0:
             continue
         lab_idx = [y for _, y in ds.samples]
@@ -95,6 +120,40 @@ def main():
         combo = det_recall * report["color"]["accuracy_base"] * report["shape"]["accuracy_base"]
         report["est_combo_accuracy"] = round(float(combo), 4)
         print("组合类别端到端(估算) = %.4f (recall×color×shape)" % combo)
+
+    # ---- 赛项规则校验：同形同色同盒、每盒 ≤4 件 ----
+    shape_classes = cfg.get("shape_classes", [])
+    color_classes = cfg.get("color_classes", [])
+    pairs = [(s, c) for s in shape_classes for c in color_classes]
+    consistency, violations, bins = bin_consistency(pairs * 2)   # 两轮遍历覆盖满盒场景
+    report["bin_rule"] = {
+        "consistency": consistency,
+        "violations": violations[:10],
+        "bin_count": len(bins),
+        "bins": {str(k): v["key"] for k, v in bins.items()},
+        "rule": "形状相同且颜色相同 → 同一个储物盒；每盒最多 4 件",
+    }
+    print("储物盒分配规则一致性: %.2f（违规 %d 项）" % (consistency, len(violations)))
+
+    # ---- 赛项验收对照 ----
+    acc_cfg = cfg.get("acceptance", {}) or {}
+    checks = []
+    if det_recall is not None and acc_cfg.get("detect_map50") is not None:
+        checks.append(("检测 mAP50", det_recall, float(acc_cfg["detect_map50"])))
+    for task in ("color", "shape", "stain"):
+        if report.get(task) and acc_cfg.get(task + "_acc") is not None:
+            checks.append(("%s 准确率" % task, report[task]["accuracy_base"], float(acc_cfg[task + "_acc"])))
+    if report.get("est_combo_accuracy") and acc_cfg.get("combo_end_to_end") is not None:
+        checks.append(("组合端到端", report["est_combo_accuracy"], float(acc_cfg["combo_end_to_end"])))
+    checks.append(("同形同色同盒一致性", consistency, float(acc_cfg.get("bin_consistency", 1.0))))
+    report["acceptance"] = [
+        {"item": name, "value": round(float(v), 4), "target": t, "pass": bool(v >= t)}
+        for name, v, t in checks
+    ]
+    print("\n赛项验收对照:")
+    for row in report["acceptance"]:
+        print("  %-12s 实测 %.4f  目标 %.2f  %s" % (
+            row["item"], row["value"], row["target"], "✔ 达标" if row["pass"] else "✘ 未达标"))
 
     os.makedirs("reports", exist_ok=True)
     with open("reports/pipeline_report.json", "w") as f:

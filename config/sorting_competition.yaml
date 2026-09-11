@@ -1,0 +1,101 @@
+# ============================================================
+# 2027 中国大学生工程实践与创新能力大赛 · 智能+工程创新赛道
+# 智能分拣赛项 —— 视觉识别方案配置（比赛版）
+# ------------------------------------------------------------
+# 现场约束（来自赛项说明）：
+#   · 货物：常用形状 + 常用颜色，尺寸 ≤40mm，表面附有模拟污渍/缺陷图形、文字、二维码
+#   · 托盘：≥160×160mm，边缘高度 ≥10mm
+#   · 储物盒：六个（标注 1–6 序号），每盒最多存放 4 件
+#   · 形状相同且颜色相同的货物必须分拣到同一个储物盒
+#   · 一次只能分拣一件货物；分拣信息显示完成后再分拣下一件（否则不计分）
+#   · 决赛货物种类/颜色/信息以现场为准 → 方案必须具备“未知类别”兜底能力
+#
+# 视觉方案（三层，各司其职）：
+#   ① 检测层  YOLOv8n  → 只检 “goods” 一类（托盘 ROI 内，小目标）
+#   ② 属性层  小 CNN   → 颜色 / 形状 / 污渍缺陷 三分类器（96×96 裁剪输入，CPU 1ms 级）
+#   ③ 标记层  OpenCV   → 二维码/文字解码（QRCodeDetector）+ 暗斑占比判定污渍
+#   属性与标记共同决定 (形状, 颜色) → 储物盒编号（同形同色同盒）
+# ============================================================
+
+# ★ 改成你自己的数据集根目录（唯一必须修改项）
+root: "/path/to/my_sorting_data"
+
+# ---------- ① 检测层 ----------
+detection_classes: ["goods"]      # 方案A：只检货物；组合类别由属性层给出
+imgsz: 960                        # 货物 ≤40mm，640 下小目标召回偏低，默认 960
+model: "yolov8n"
+epochs: 150
+batch: 8                          # imgsz 960 时显存/内存占用上升，按机器调整
+patience: 40
+
+# 托盘 ROI（像素坐标，按现场标定填写；也可用 --auto-roi 每帧自动取最大白/灰区域）
+roi:
+  enabled: true
+  x1: 0
+  y1: 0
+  x2: 0
+  y2: 0
+  auto: true
+
+# ---------- ② 属性层 ----------
+attribute_datasets:
+  color: "attributes/color"
+  shape: "attributes/shape"
+  stain: "attributes/stain"       # 污渍/缺陷（3 类）
+
+color_classes: ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "black", "white"]
+shape_classes: ["cube", "cuboid", "cylinder", "ball", "tetra", "prism5", "prism6"]
+stain_classes: ["clean", "stain", "defect"]
+
+attr_img_size: 96                 # 属性分类器输入尺寸
+attr_crop_margin: 0.12            # 从检测框外扩比例（保留边缘信息）
+
+# ---------- ③ 标记层（二维码 / 文字 / 污渍图形） ----------
+marks:
+  qr: true                        # cv2.QRCodeDetector 解码
+  text: true                      # 文字（OCR 可选接入；默认取二维码载荷作为文字）
+  stain_dark_ratio: 0.05          # 暗斑占比 > 该值判为“污渍”
+  defect_dark_ratio: 0.14         # 暗斑占比 > 该值判为“缺陷”
+  export_json: "marks/marks.json" # scripts/decode_marks.py 导出
+
+# ---------- 储物盒规则（与网关一致） ----------
+bins:
+  count: 6                        # 六个单独储物盒（1–6 号）
+  capacity: 4                     # 每盒最多 4 件
+  rule: "same_shape_color_same_bin"
+
+# ---------- 训练增强（小目标 + 现场色差/遮挡） ----------
+aug:
+  hsv_h: 0.04                     # 现场色差批次
+  hsv_s: 0.30
+  hsv_v: 0.30
+  fliplr: 0.5
+  flipud: 0.2                     # 俯视相机：允许上下翻转
+  degrees: 15.0                   # 摆放角度随机
+  translate: 0.10
+  scale: 0.50                     # 小目标尺度抖动
+  mosaic: 1.0
+  close_mosaic: 30                # 提前关闭 mosaic，稳定小目标
+  mixup: 0.10
+  copy_paste: 0.30                # 复制粘贴：提升密集/遮挡场景
+  erase: 0.15                     # 随机擦除：模拟遮挡与污渍
+  cos_lr: true
+
+# ---------- 视觉与执行节拍（对应“一次一件”） ----------
+decision:
+  conf_thres: 0.45
+  iou_thres: 0.45
+  confirm_frames: 5               # 同一目标连续 N 帧确认（防误检导致空抓）
+  min_area_ratio: 0.004           # 相对整帧的最小面积（40mm 货物在 1080p 下约 0.2%–1%）
+  single_item: true               # 托盘内仅一件货物时才允许抓取
+  tray_state_check: true          # 抓取前后托盘“有货/空盘”状态校验
+
+# ---------- 验收指标（现场自检） ----------
+acceptance:
+  detect_map50: 0.95
+  color_acc: 0.98
+  shape_acc: 0.98
+  stain_acc: 0.95
+  qr_decode_rate: 0.98
+  combo_end_to_end: 0.95
+  bin_consistency: 1.00           # 同形同色同盒必须 100% 正确

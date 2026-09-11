@@ -64,7 +64,8 @@ def main():
     model = YOLO(args.resume or base)
 
     epochs = args.epochs or int(cfg.get("epochs", 120))
-    imgsz = args.imgsz or int(cfg.get("img_size", 640))
+    # 兼容 img_size(旧) / imgsz(比赛配置)：货物 ≤40mm 属小目标，默认 960
+    imgsz = args.imgsz or int(cfg.get("imgsz", cfg.get("img_size", 960)))
     batch = args.batch or int(cfg.get("batch", 16))
     aug = cfg.get("aug", {}) or {}
 
@@ -74,24 +75,31 @@ def main():
         imgsz=imgsz,
         batch=batch,
         device=args.device,
-        # --- 增强(覆盖 ultralytics 默认, 来源 config/dataset.yaml) ---
+        # --- 增强(覆盖 ultralytics 默认, 来源 config) ---
         hsv_h=float(aug.get("hsv_h", 0.05)),      # 色差模拟
         hsv_s=float(aug.get("hsv_s", 0.3)),
         hsv_v=float(aug.get("hsv_v", 0.3)),
         fliplr=float(aug.get("fliplr", 0.5)),
-        flipud=float(aug.get("flipud", 0.2)),
+        flipud=float(aug.get("flipud", 0.2)),     # 俯视相机允许上下翻转
         degrees=float(aug.get("degrees", 10.0)),
         translate=float(aug.get("translate", 0.05)),
         scale=float(aug.get("scale", 0.3)),
         mosaic=float(aug.get("mosaic", 1.0)),
         close_mosaic=int(aug.get("close_mosaic", 20)),
         mixup=float(aug.get("mixup", 0.1)),
-        erasing=float(aug.get("erase", 0.1)),     # 随机擦除模拟遮挡
-        patience=30,
+        copy_paste=float(aug.get("copy_paste", 0.0)),  # 复制粘贴：密集/遮挡场景
+        erasing=float(aug.get("erase", 0.1)),     # 随机擦除模拟遮挡与污渍
+        cos_lr=bool(aug.get("cos_lr", False)),
+        # 小目标：关闭矩形推理，保证 letterbox 后尺度一致
+        rect=False,
+        cache=bool(aug.get("cache", False)),
+        workers=int(aug.get("workers", 8)),
+        patience=int(cfg.get("patience", 30)),
         project="runs/detect",
         name="train",
         exist_ok=True,
         verbose=True,
+        plots=True,
         amp=True,
     )
 
@@ -104,6 +112,10 @@ def main():
     metrics = model.val(data=data_yaml, imgsz=imgsz, device=args.device)
     print("验证集: mAP50=%.4f  mAP50-95=%.4f" % (metrics.box.map50,
                                                   metrics.box.map))
+    # 赛项验收线（config.acceptance.detect_map50，默认 0.95）
+    target = float((cfg.get("acceptance", {}) or {}).get("detect_map50", 0.95))
+    print("赛项验收线 mAP50 ≥ %.2f → %s (实测 %.4f)" % (
+        target, "达标" if metrics.box.map50 >= target else "未达标", metrics.box.map50))
     print("下一步: python export_models.py --config %s --imgsz %d" % (
         args.config, imgsz))
 

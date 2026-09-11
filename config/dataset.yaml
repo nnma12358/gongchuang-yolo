@@ -1,41 +1,65 @@
-# 智能分拣数据集配置 —— 训练包统一入口
-# ★ 把 root 改成你自己的数据集根目录(仅这一点必须改)
+# 智能分拣数据集配置 —— 训练包统一入口（已对齐 2027 智能分拣赛项）
+# ★ 把 root 改成你自己的数据集根目录（仅这一点必须改）
+# 比赛版全量配置见 config/sorting_competition.yaml（含 ROI / 标记解码 / 六盒规则 / 验收线）
 root: "/path/to/my_sorting_data"
 
 # ---------- 目标检测 ----------
-# 方案A(推荐): 只检"货物", 属性交给分类器 -> ["goods"]
-# 方案B(端到端): 组合类别(6色×4形按需) 如:
-#   ["red_cube","red_cylinder","blue_cube","blue_cylinder","green_cube",
-#    "green_cylinder","yellow_cube","yellow_ball","black_cube","lightblue_cylinder"]
+# 方案A（推荐，比赛默认）：只检“货物”一类，颜色/形状/污渍交给属性分类器
+#   → 决赛更换货物种类时无需重训检测器，只需补属性样本
+# 方案B（端到端）：组合类别，如 ["red_cube","blue_cylinder","cyan_prism5", ...]
 detection_classes: ["goods"]
 
-# ---------- 属性分类器(方案A 使用; 方案B 可忽略) ----------
+# ---------- 属性分类器（方案A 使用；方案B 可忽略） ----------
 attribute_datasets:
-  color:  "attributes/color"     # 子目录: red yellow blue green black lightblue
-  shape:  "attributes/shape"     # 子目录: cube cylinder ball cone triangle
-  defect: "attributes/defect"    # 子目录: clean defect
-color_classes: ["red","yellow","blue","green","black","lightblue"]
-shape_classes: ["cube","cylinder","ball","cone","triangle"]
-defect_classes: ["clean","defect"]
+  color:  "attributes/color"     # 常用颜色
+  shape:  "attributes/shape"     # 常用形状
+  stain:  "attributes/stain"     # 污渍 / 缺陷（赛项：表面附有模拟污渍和缺陷的图形）
+
+color_classes: ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "black", "white"]
+shape_classes: ["cube", "cuboid", "cylinder", "ball", "tetra", "prism5", "prism6"]
+stain_classes: ["clean", "stain", "defect"]
+
+# ---------- 表面标记（二维码 / 文字） ----------
+# 不参与训练：由 scripts/decode_marks.py 用 OpenCV 解码，并导出 marks/marks.json
+marks:
+  qr: true
+  text: true
+  stain_dark_ratio: 0.05
+  defect_dark_ratio: 0.14
 
 # ---------- 划分 / 训练 ----------
 train_ratio: 0.85
-img_size: 640                    # 训练输入; 小目标密集请用 960
-epochs: 120
-batch: 16
-model: "yolov8n"                 # yolov8n / yolov8s
+imgsz: 960                       # 货物 ≤40mm 属小目标（640 下召回偏低）
+model: "yolov8n"
+epochs: 150
+batch: 8
+patience: 40
+attr_img_size: 96                # 属性分类器输入
+attr_crop_margin: 0.12           # 检测框外扩比例（scripts/crop_attributes.py 使用）
 
-# ---------- 增强(重点模拟现场色差与密排遮挡) ----------
+# ---------- 增强（重点模拟现场色差、密排遮挡、覆盖 ≤40mm 尺度） ----------
 aug:
-  hsv_h: 0.05                    # 色相抖动(0.05≈±18°, 模拟色差批次)
+  hsv_h: 0.04                    # 色相抖动（现场色差批次）
   hsv_s: 0.30
   hsv_v: 0.30
   fliplr: 0.5
-  flipud: 0.2
-  degrees: 10.0
-  translate: 0.05
-  scale: 0.3
+  flipud: 0.2                    # 俯视相机允许上下翻转
+  degrees: 15.0
+  translate: 0.10
+  scale: 0.50
   mosaic: 1.0
-  close_mosaic: 20               # 最后20个epoch关闭mosaic(稳定小目标)
-  mixup: 0.1
-  erase: 0.1                     # 随机擦除模拟遮挡
+  close_mosaic: 30               # 提前关闭 mosaic（稳定小目标）
+  mixup: 0.10
+  copy_paste: 0.30               # 复制粘贴：密集摆放/遮挡
+  erase: 0.15                    # 随机擦除：遮挡与污渍
+  cos_lr: true
+
+# ---------- 赛项验收线（eval_pipeline.py 自动对照） ----------
+acceptance:
+  detect_map50: 0.95
+  color_acc: 0.98
+  shape_acc: 0.98
+  stain_acc: 0.95
+  qr_decode_rate: 0.98
+  combo_end_to_end: 0.95
+  bin_consistency: 1.00
