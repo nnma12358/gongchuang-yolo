@@ -63,6 +63,50 @@ python eval_pipeline.py  --config config/sorting_competition.yaml
 
 一键：`bash scripts/run_all.sh config/sorting_competition.yaml`
 
+
+## 2.5 合成数据集（无实拍也能起步，且带 sim-to-real 约束）
+
+`tools/synth_polyhedra.py` 用纯 numpy/OpenCV 渲染**多面体**托盘场景，自带**阴影**、
+**远近（相机高度/尺度变化）**与**角度（俯仰/偏航/滚转 + 目标朝向倾角）**：
+
+```bash
+# 生成 800 张（含 YOLO 标注 + 颜色/形状/污渍属性小图 + 预览拼图）
+python3 tools/synth_polyhedra.py --out data/synth --n 800 --per-image 2 --imgsz 1280 720
+# 先看效果（12 张 + 拼图）
+python3 tools/synth_polyhedra.py --out /tmp/synth --n 12 --per-image 2 --preview 8
+```
+
+产物结构（与 `config/sorting_competition.yaml` 完全对齐）：
+
+```
+data/synth/images/{train,val}/*.jpg      合成图（含噪声/曝光/白平衡/JPEG 等真实退化）
+data/synth/labels/{train,val}/*.txt      YOLO 标注（单类 goods；框取真实投影轮廓，不含阴影）
+data/synth/attributes/{color,shape,stain}/<class>/*.jpg
+data/synth/preview.jpg                   抽样拼图（肉眼核对）
+data/synth/dataset_stats.json            目标像素尺寸/分布统计
+```
+
+### 为“现实可用”而设的约束（改参数前请先读）
+
+| 约束 | 做法 | 原因 |
+|---|---|---|
+| 相机几何 | `REAL` 段：高度 320mm、HFOV 60°、分辨率与现场一致 | 合成图目标的**像素尺寸**必须与实拍一致（40mm 目标约 126px@1280），否则模型学不到正确尺度 |
+| 光照 | 方向光 z>0（顶光/侧顶光）+ 环境光 0.30~0.46 + 半影随光源尺寸变化 | 现场是室内漫射光；阴影过锐/全黑会让模型依赖不存在的线索 |
+| 姿态 | 目标平放、倾角 ≤9° | 货物放在托盘上，不可能出现悬空/大倾角姿态 |
+| 材质 | 哑光塑料（低高光）、托盘浅灰白、无花纹 | 避免学到合成纹理；现场托盘与货物均为哑光 |
+| 退化 | 高斯噪声、白平衡/曝光抖动、暗角、轻微失焦、JPEG 85~96 | 覆盖真实相机的成像差异（域随机化只覆盖现实存在的差异） |
+| 标签 | bbox 来自真实投影轮廓，**排除阴影** | 阴影不是货物，纳入会让框偏大、抓取点偏移 |
+
+### sim-to-real 落地流程（推荐）
+
+1. **合成预训练**：先用 1500~3000 张合成图训练检测 + 属性分类器；
+2. **实拍微调**（关键一步）：在现场相机位姿下拍 30~50 张真实照片（含 2~3 个色差批次、
+   污渍/缺陷样本），与合成图按 1:3 混合，用 `--epochs 30 --lr0 0.001` 微调；
+3. **交叉验证**：用 `eval_pipeline.py` 同时报合成验证集与实拍集的指标，差距 >10% 说明合成域偏差大，
+   优先调整 `REAL` 相机参数与光照，而不是继续加数据；
+4. **经典算法兜底**：球/圆柱在俯视剪影下几乎不可分（都是圆），这类靠深度（顶面平整度）
+   或属性 CNN 判别 —— 现场可用 `detect_core.attach_depth` 的 `height_mm` 交叉校验。
+
 ## 3. 配置文件
 
 | 文件 | 用途 |
@@ -82,6 +126,7 @@ python eval_pipeline.py  --config config/sorting_competition.yaml
 | **属性集自动生成** | `scripts/crop_attributes.py`：从检测标注直接裁出 96×96 属性样本，省一遍标注 |
 | **节拍约束** | `decision.confirm_frames=5`、`single_item=true`（一次一件）、托盘有货/空盘校验，避免空抓与掉落 |
 | **验收自动化** | `eval_pipeline.py` 输出赛项对照表（mAP50 / 颜色 / 形状 / 污渍 / 组合端到端 / 同盒一致性） |
+| **合成数据** | `tools/synth_polyhedra.py`：多面体 + 阴影 + 远近 + 角度的物理合理渲染，直接产出 YOLO/属性数据集 |
 
 ## 5. 输出与验收
 
