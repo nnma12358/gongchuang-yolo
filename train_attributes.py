@@ -100,13 +100,15 @@ class AttrDataset(Dataset):
         path, cls = self.samples[i]
         img = cv2.imread(path)
         if img is None:
-            return torch.zeros(3, IMG_SIZE, IMG_SIZE), cls
+            return torch.zeros(3, IMG_SIZE, IMG_SIZE, dtype=torch.float32), cls
         img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
         if random.random() < 0.7:
             img = aug_crop(img, self.task)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        img = (img - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
-        return torch.from_numpy(img.transpose(2, 0, 1)), cls
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        img = (img - mean) / std
+        return torch.from_numpy(np.ascontiguousarray(img.transpose(2, 0, 1))).float(), cls
 
 
 def main():
@@ -142,7 +144,9 @@ def main():
     if len(val_ds) == 0:
         raise SystemExit("验证集为空, 请检查每类图像数量")
 
-    train_ld = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=2)
+    # drop_last=True：训练时 BatchNorm 不接受 batch=1（小 CNN 在最后一批会报错）
+    train_ld = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
+                          num_workers=2, drop_last=True)
     val_ld = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=2)
 
     model = TinyNet(len(classes))

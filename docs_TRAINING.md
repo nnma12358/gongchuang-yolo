@@ -61,3 +61,51 @@ tools/run_clean_pipeline.sh    以上全流程串行（后台跑）
 config/train_mix.yaml          小数据集稳定配方（AdamW + lr0 1e-3 + 温和增强）
 config/train_clean.yaml        干净子集配方（自动生成，freeze=0）
 ```
+
+## 6. 属性 CNN（颜色 / 形状 / 污渍）—— 本次已训练并达标
+
+数据集：`tools/run_attr_pipeline.sh` 生成 **2400 张单目标图**（1024×576，含阴影/远近/角度），
+按类别导出属性小图；实测每类样本数：
+
+| 任务 | 类别数 | 每类样本 | 最佳验证准确率 | 验收线 |
+|---|---|---|---|---|
+| color | 9 | 232–292 | **95.59%** | ≥95% ✅ |
+| shape | 7 | 319–372 | **99.45%** | ≥95% ✅ |
+| stain | 3 | clean 1654 / stain 532 / defect 214 | **96.41%** | ≥90% ✅ |
+
+训练中修掉的两个真实问题：
+1. `BatchNorm` 在最后一批 batch=1 时崩溃 → DataLoader 加 `drop_last=True`；
+2. 归一化常量用 numpy 默认 float64，把输入提升成 double → 常量显式 `dtype=np.float32`。
+
+导出与部署：
+```bash
+python3 tools/run_attr_pipeline.sh                    # 生成→训练→导出→部署到 sort-web/models/attr/
+# 产物：runs/attr/{color,shape,stain}/best.onnx → ../sort-web/models/attr/{task}.onnx
+```
+
+容器实测（sort-cnn :8102，训练集外图片）：
+```
+真值 颜色=red    → 预测 red(1.00)
+真值 形状=cube   → 预测 cube(0.99)   prism5 → prism5(1.00)   prism6 → prism6(1.00)
+真值 表面=stain  → 预测 stain(0.98)
+```
+
+三层全链路实测（yolo 检测 → cnn 属性 → 视觉编排，输入一张完整场景图）：
+```
+引擎 yolo(+cnn) | 检出 1 件 | 框 [54,63,339,370]（真值 中心(0.385,0.424) 尺寸(0.523,0.590)）
+  · 形状=正四面体(0.78) 颜色=紫色(1.00) 表面=无
+```
+
+## 7. TensorRT（Jetson 上的 INT8）
+
+`tools/build_trt_engine.py`：在 Jetson 上构建 **INT8（熵校准）+ FP16** 引擎，输出 `*.engine` 与 `calib.cache`。
+
+```bash
+# PC 上先自检（无需 TensorRT）
+python3 tools/build_trt_engine.py --check --onnx exports_clean/best_fp32.onnx --calib-dir data/mix_clean/images/train
+# Jetson 上构建（校准集建议用现场实拍 100~300 张）
+python3 tools/build_trt_engine.py --onnx exports_clean/best_fp32.onnx \
+    --calib-dir data/mix_clean/images/train --calib-n 200 --imgsz 640 --out engines --bench 20
+```
+部署：`cp engines/*.engine ../sort-web/models/yolo/`，compose 里设 `ENGINE=trt`
+（`server/yolo_server.py` 已支持 `ENGINE=trt`，用 pycuda + TensorRT runtime 执行）。
