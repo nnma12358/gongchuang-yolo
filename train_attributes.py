@@ -61,9 +61,12 @@ def aug_crop(bgr, task="color"):
                                     random.uniform(-15, 15), 1.0)
         img = cv2.warpAffine(img, M, (cols, rows), borderValue=(114, 114, 114))
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[..., 0] = np.clip(hsv[..., 0] + random.uniform(-10, 10), 0, 180)
-    hsv[..., 1] = np.clip(hsv[..., 1] * random.uniform(0.7, 1.3), 0, 255)
-    hsv[..., 2] = np.clip(hsv[..., 2] * random.uniform(0.7, 1.3), 0, 255)
+    # 色相抖动按任务区分：颜色分类容忍度极小（±20° 会把红↔橙标签互相污染），
+    # 形状/污渍任务可以大一些用以提升色差鲁棒性；明度/饱和度抖动对所有任务都有益。
+    hue_amp = {"color": 3.0, "shape": 8.0, "stain": 8.0}.get(task, 6.0)
+    hsv[..., 0] = np.clip(hsv[..., 0] + random.uniform(-hue_amp, hue_amp), 0, 180)
+    hsv[..., 1] = np.clip(hsv[..., 1] * random.uniform(0.65, 1.35), 0, 255)
+    hsv[..., 2] = np.clip(hsv[..., 2] * random.uniform(0.65, 1.35), 0, 255)
     img = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
     if random.random() < 0.2 and img.shape[0] > 20:
         y0 = random.randint(0, img.shape[0] - 10)
