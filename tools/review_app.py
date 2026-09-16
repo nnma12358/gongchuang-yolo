@@ -13,16 +13,13 @@ X-AnyLabeling 这类工具要点选、拖拽、按保存；这里把 90% 的情�
 然后浏览器打开（Windows 侧同样可访问）：  http://localhost:8770
 
 键盘（鼠标拖拽 = 在当前标注上继续画框/改框）：
+    鼠标拖拽     在空白处拖 = 新建框；在已有框上拖 = 移动该框
     A / Enter  标注正确，下一张（记为"已复核"）
-    N          采纳模型建议框（把模型框并进来，再按 A 即可）
-    Z          撤销（回到本张图进来时的状态）
-    D / Del    删除选中的框
-    1..9       选中第 N 个框
-    方向键      微调选中框位置（Shift=大步长，Alt=改尺寸）
-    W          切到"下一个未复核"
-    ← / →      上一张 / 下一张
-    G          跳到指定序号
-    H          帮助
+    N          并入模型建议框（自动去重，不会越按越多；Shift+N 强制追加）
+    Z          撤销本张所有修改    D / Del 删除选中的框    1..9 选中第 N 个框
+    方向键      微调选中框位置（Shift=大步长，Alt=改尺寸）；没选中框时 ←/→ 翻页
+    , / .      上一张 / 下一张     W 跳到下一个未复核     G 跳到指定序号
+    Esc        取消选中            H 帮助
 自动保存：任何修改立即写入 labels/*.txt，刷新/断电都不丢。
 """
 import argparse
@@ -57,8 +54,8 @@ PAGE = r"""<!doctype html>
  .it.done .nm{color:#8fa3b8}
  #bar{padding:8px 12px;border-bottom:1px solid #253040;display:flex;gap:14px;align-items:center;background:#161d27}
  #bar b{color:#7fd1ff}
- #stage{flex:1;position:relative;overflow:hidden;background:#0b0f14;display:flex;align-items:center;justify-content:center}
- canvas{cursor:crosshair;image-rendering:auto}
+ #stage{flex:1;position:relative;overflow:hidden;background:#0b0f14;display:flex;align-items:center;justify-content:center;min-height:0}
+ canvas{cursor:crosshair;image-rendering:auto;flex:none}
  #info{padding:8px 12px;border-top:1px solid #253040;background:#161d27;font-size:13px;min-height:42px}
  .tag{display:inline-block;padding:1px 7px;border-radius:10px;margin-right:6px;font-size:12px}
  .t1{background:#25402a;color:#8ff0a4}.t2{background:#402a25;color:#ffb3a0}.t3{background:#2a3040;color:#a9c4ff}
@@ -75,7 +72,7 @@ PAGE = r"""<!doctype html>
     <div id="bar">
       <span class="pill" id="pos">-/-</span>
       <span id="name"></span>
-      <span style="margin-left:auto"><b>A</b> 正确·下一张 &nbsp;<b>N</b> 采纳模型框 &nbsp;<b>Z</b> 撤销 &nbsp;<b>W</b> 下一张未复核 &nbsp;<b>H</b> 帮助</span>
+      <span style="margin-left:auto"><b>A</b> 正确·下一张 &nbsp;<b>N</b> 并入模型框 &nbsp;<b>拖拽</b> 画框 &nbsp;<b>Z</b> 撤销 &nbsp;<b>, .</b> 翻页 &nbsp;<b>W</b> 下一张未复核 &nbsp;<b>H</b> 帮助</span>
     </div>
     <div id="stage"><canvas id="cv"></canvas></div>
     <div id="info"></div>
@@ -108,34 +105,43 @@ function renderList(){
 function fit(){
   const st=document.getElementById('stage');
   const maxW=st.clientWidth-16, maxH=st.clientHeight-16;
-  if(!S.img) return;
+  if(!S.img||!S.img.width) return;
   const s=Math.min(maxW/S.img.width, maxH/S.img.height);
-  cv.width=Math.round(S.img.width*s); cv.height=Math.round(S.img.height*s);
+  cv.width=Math.max(64,Math.round(S.img.width*s));
+  cv.height=Math.max(64,Math.round(S.img.height*s));
   cv.style.width=cv.width+'px'; cv.style.height=cv.height+'px';
 }
 function draw(){
-  if(!S.img) return;
-  const s=cv.width/S.img.width;
-  ctx.clearRect(0,0,cv.width,cv.height);
-  ctx.drawImage(S.img,0,0,cv.width,cv.height);
-  // 模型建议框
+  if(!S.img||!S.img.width){                 // 图片没加载出来就别画，避免把画布搞坏
+    ctx.clearRect(0,0,cv.width,cv.height);
+    ctx.fillStyle='#8899aa'; ctx.font='16px sans-serif';
+    ctx.fillText('图片未加载：请刷新页面（或检查 /img/ 是否 404）',16,32);
+    return;
+  }
+  // ⚠ 关键：框坐标是**归一化**的(0~1)，必须乘画布尺寸 W/H；
+  //   之前乘的是 s=cv.width/img.width（像素缩放比），框全被画到左上角 0.x 像素处，
+  //   看起来就是"什么都看不到"。
+  const W=cv.width, H=cv.height;
+  ctx.clearRect(0,0,W,H);
+  ctx.drawImage(S.img,0,0,W,H);
+  // 模型建议框（虚线）
   S.hints.forEach(h=>{
-    const [x1,y1,x2,y2]=h.xyxy.map(v=>v*s);
-    ctx.setLineDash([6,4]); ctx.lineWidth=2;
-    ctx.strokeStyle=h.conf>=0.25?'rgba(255,90,90,.95)':'rgba(255,170,60,.85)';
+    const x1=h.xyxy[0]*W, y1=h.xyxy[1]*H, x2=h.xyxy[2]*W, y2=h.xyxy[3]*H;
+    ctx.setLineDash([7,4]); ctx.lineWidth=2;
+    ctx.strokeStyle=h.conf>=0.25?'rgba(255,90,90,.95)':'rgba(255,170,60,.9)';
     ctx.strokeRect(x1,y1,x2-x1,y2-y1);
     ctx.setLineDash([]);
-    ctx.fillStyle=ctx.strokeStyle; ctx.font='12px sans-serif';
-    ctx.fillText('M'+(h.conf*100|0)/100,x1+2,Math.max(12,y1-3));
+    ctx.fillStyle=ctx.strokeStyle; ctx.font='bold 13px sans-serif';
+    ctx.fillText('M'+(h.conf*100|0)/100,x1+3,Math.max(14,y1-4));
   });
   // 当前标注
   S.boxes.forEach((b,k)=>{
     const on=k===S.sel;
-    ctx.lineWidth=on?3:2;
-    ctx.strokeStyle=on?'#ffd166':'#3ddc84';
-    ctx.strokeRect(b[0]*s,b[1]*s,b[2]*s,b[3]*s);
-    ctx.fillStyle=ctx.strokeStyle; ctx.font='bold 12px sans-serif';
-    ctx.fillText(String(k+1),b[0]*s+4,b[1]*s+14);
+    ctx.lineWidth=on?4:3;
+    ctx.strokeStyle=on?'#ffd166':'#22d46e';
+    ctx.strokeRect(b[0]*W,b[1]*H,b[2]*W,b[3]*H);
+    ctx.fillStyle=on?'#ffd166':'#22d46e'; ctx.font='bold 14px sans-serif';
+    ctx.fillText(String(k+1),b[0]*W+4,Math.min(H-4,b[1]*H+16));
   });
 }
 async function goto(k){
@@ -146,6 +152,7 @@ async function goto(k){
   S.boxes=d.boxes.map(b=>b.slice()); S.orig=d.boxes.map(b=>b.slice()); S.hints=d.hints||[];
   S.img=new Image();
   S.img.onload=()=>{fit();draw();};
+  S.img.onerror=()=>{ showErr('图片加载失败：'+it.file); };
   S.img.src='/img/'+encodeURIComponent(it.file);
   document.getElementById('name').textContent=it.file;
   document.getElementById('pos').textContent=(k+1)+'/'+S.items.length;
@@ -196,10 +203,22 @@ function clamp(b){
   x=Math.max(0,Math.min(1-w,x)); y=Math.max(0,Math.min(1-h,y));
   return [x,y,w,h];
 }
+function showErr(msg){
+  const el=document.getElementById('info');
+  el.innerHTML='<span class="tag t2">'+msg+'</span>';
+}
+function near(a,b,thr){       // 两个框是否几乎重合（用于去重，避免反复按 N 堆叠）
+  const ix=Math.max(0,Math.min(a[0]+a[2],b[0]+b[2])-Math.max(a[0],b[0]));
+  const iy=Math.max(0,Math.min(a[1]+a[3],b[1]+b[3])-Math.max(a[1],b[1]));
+  const inter=ix*iy, ua=a[2]*a[3]+b[2]*b[3]-inter;
+  return ua>0 && inter/ua>=thr;
+}
 async function save(){
   const it=S.items[S.i];
   await fetch('/api/labels',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({file:it.file,boxes:S.boxes,reviewed:!!S.done[it.file]})});
+  document.getElementById('info').innerHTML=
+    document.getElementById('info').innerHTML.replace(/当前 \d+ 框/,'当前 '+S.boxes.length+' 框');
 }
 async function markDone(v){
   const it=S.items[S.i]; S.done[it.file]=v;
@@ -212,14 +231,27 @@ document.addEventListener('keydown',async e=>{
   if(k==='a'||k==='A'||k==='Enter'){ e.preventDefault(); await markDone(true); next(1,true); return; }
   if(k==='w'||k==='W'){ e.preventDefault(); let j=S.i+1; while(j<S.items.length&&S.done[S.items[j].file]) j++;
     goto(j<S.items.length?j:0); return; }
-  if(k==='ArrowRight'){ e.preventDefault(); await goto(S.i+1); return; }
-  if(k==='ArrowLeft'){ e.preventDefault(); await goto(S.i-1); return; }
+  // ← → ：没选中框时翻页；选中框时用于微调（见下）
+  if((k==='ArrowRight'||k==='ArrowLeft')&&S.sel<0){
+    e.preventDefault(); await goto(S.i+(k==='ArrowRight'?1:-1)); return; }
+  if(k==='.'||k==='>'){ e.preventDefault(); await goto(S.i+1); return; }
+  if(k===','||k==='<'){ e.preventDefault(); await goto(S.i-1); return; }
   if(k==='z'||k==='Z'){ S.boxes=S.orig.map(b=>b.slice()); S.sel=-1; draw(); save(); return; }
-  if(k==='n'||k==='N'){ S.hints.forEach(h=>{ const [x1,y1,x2,y2]=h.xyxy;
-      S.boxes.push(clamp([x1,y1,x2-x1,y2-y1])); }); draw(); save(); return; }
+  if(k==='n'||k==='N'){                       // 并入模型建议框（去重，不会越按越多）
+    let add=0;
+    S.hints.forEach(h=>{ const x1=h.xyxy[0],y1=h.xyxy[1];
+      const nb=clamp([x1,y1,h.xyxy[2]-x1,h.xyxy[3]-y1]);
+      if(!S.boxes.some(b=>near(b,nb,0.75))){ S.boxes.push(nb); add++; }
+      else if(e.shiftKey){ S.boxes.push(nb); add++; }   // Shift+N 强制追加
+    });
+    draw(); await save();
+    alert(add?('已并入 '+add+' 个模型建议框（共 '+S.boxes.length+' 框）')
+             :'模型建议框已全部存在，没有新增（要重复添加请按 Shift+N）');
+    return; }
   if(k==='d'||k==='D'||k==='Delete'||k==='Backspace'){
     if(S.sel>=0){ S.boxes.splice(S.sel,1); S.sel=-1; draw(); save(); } return; }
   if(/^[1-9]$/.test(k)){ const n=+k-1; if(n<S.boxes.length){S.sel=n;draw();} return; }
+  if(k==='Escape'){ S.sel=-1; draw(); return; }
   if(k==='g'||k==='G'){ const v=prompt('跳到第几张（1-'+S.items.length+'）：'); 
     if(v){const n=parseInt(v,10); if(n>=1&&n<=S.items.length) goto(n-1);} return; }
   if(k==='h'||k==='H'){ alert(document.querySelector('#bar span:last-child').innerText

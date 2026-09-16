@@ -259,6 +259,16 @@ def main():
         model = YOLO(args.weights)
         print("[audit] 模型:", args.weights)
 
+    # 每次重建前清空旧产物：否则上一轮文件会残留（曾出现 193 张变 386 张），
+    # 旧序号还会与新序号撞名，复核台里就会出现"空标注 / 对不上图"的项。
+    for sub in ("overlays", "sheets"):
+        p = os.path.join(args.out, sub)
+        if os.path.isdir(p):
+            shutil.rmtree(p)
+    for sub in ("images", "labels"):
+        p = os.path.join(args.out, "review_set", sub)
+        if os.path.isdir(p):
+            shutil.rmtree(p)
     os.makedirs(os.path.join(args.out, "overlays"), exist_ok=True)
     os.makedirs(os.path.join(args.out, "sheets"), exist_ok=True)
     rows = []
