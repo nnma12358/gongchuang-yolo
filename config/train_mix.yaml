@@ -1,0 +1,33 @@
+# 混合数据集（实拍+生成）训练配方 —— 小数据集稳定版
+# 背景：191 张训练图，默认 SGD lr0=0.01 + 强增强会发散（实测 mAP50 从 0.55 崩到 0.001）
+# 对策：AdamW + lr0 0.001 + 冻结骨干前 10 层 + 温和增强 + 早停
+root: "/home/xxxffyy/工创/工创yolo/data/real_synth_mix"
+detection_classes: ["goods"]
+model: "yolov8n"
+imgsz: 640
+epochs: 40
+batch: 16
+patience: 12
+optimizer: "AdamW"
+lr0: 0.001
+lrf: 0.01
+warmup_epochs: 3.0
+freeze: 10                # 冻结 backbone 前 10 层（小数据集防过拟合/发散）
+aug:
+  hsv_h: 0.03
+  hsv_s: 0.5
+  hsv_v: 0.4
+  fliplr: 0.5
+  flipud: 0.0
+  degrees: 10.0
+  translate: 0.08
+  scale: 0.35
+  mosaic: 0.8
+  close_mosaic: 10
+  mixup: 0.0
+  copy_paste: 0.0
+  erase: 0.2
+  cos_lr: true
+  workers: 8
+acceptance:
+  detect_map50: 0.90

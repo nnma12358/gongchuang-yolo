@@ -1,0 +1,44 @@
+{
+  "imgsz": 640,
+  "data": "/home/xxxffyy/工创/工创yolo/data/real_synth_mix",
+  "models": [
+    {
+      "latency_ms": {
+        "mean": 30.24,
+        "p50": 29.46,
+        "p95": 36.14
+      },
+      "candidate_boxes_mean": 0,
+      "size_mb": 12.27,
+      "name": "FP32",
+      "path": "exports_final/best_fp32.onnx"
+    },
+    {
+      "latency_ms": {
+        "mean": 95.35,
+        "p50": 94.02,
+        "p95": 113.38
+      },
+      "candidate_boxes_mean": 0,
+      "size_mb": 3.36,
+      "name": "INT8-dynamic",
+      "path": "exports_final/best_int8_dynamic.onnx",
+      "speedup_vs_fp32": 0.32,
+      "size_ratio_vs_fp32": 0.274
+    },
+    {
+      "latency_ms": {
+        "mean": 12.22,
+        "p50": 11.61,
+        "p95": 14.93
+      },
+      "candidate_boxes_mean": 0,
+      "size_mb": 3.46,
+      "name": "INT8-static",
+      "path": "exports_final/best_int8_static.onnx",
+      "speedup_vs_fp32": 2.47,
+      "size_ratio_vs_fp32": 0.282
+    }
+  ],
+  "best_int8": "exports_final/best_int8.onnx"
+}

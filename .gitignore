@@ -18,3 +18,8 @@ venv/
 # 混合数据集（实拍+生成，体量较大，按需本地生成）
 data/real_synth_mix/
 data/synth_polyhedra_300/
+
+# 训练产物（按需本地生成；量化模型可单独归档）
+runs/
+exports/
+exports_clean/
