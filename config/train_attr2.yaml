@@ -1,0 +1,13 @@
+# 属性分类器训练配置（含现场真实类别：正十二面体 dodecahedron、圆锥 cone）
+root: "/home/xxxffyy/工创/工创yolo/data/attr_ds2"
+attribute_datasets:
+  color: "attributes/color"
+  shape: "attributes/shape"
+  stain: "attributes/stain"
+color_classes: ["red","orange","yellow","green","cyan","blue","purple","black","white"]
+shape_classes: ["cube","cuboid","cylinder","ball","tetra","prism5","prism6","dodecahedron","cone"]
+stain_classes: ["clean","stain","defect"]
+acceptance:
+  color_acc: 0.95
+  shape_acc: 0.95
+  stain_acc: 0.90

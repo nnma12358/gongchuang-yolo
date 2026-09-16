@@ -23,3 +23,8 @@ data/synth_polyhedra_300/
 runs/
 exports/
 exports_clean/
+data/pseudo_real/
+data/mix_v3/
+data/attr_ds/
+data/attr_ds2/
+exports_v3/

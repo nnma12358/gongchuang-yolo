@@ -48,7 +48,8 @@ REAL = {
     "goods_mm": 40.0,         # 货物尺寸 ≤40mm
 }
 
-SHAPES = ["正方体", "长方体", "圆柱", "球", "正四面体", "五棱柱", "六棱柱"]
+SHAPES = ["正方体", "长方体", "圆柱", "球", "正四面体", "五棱柱", "六棱柱",
+          "正十二面体", "圆锥"]
 COLORS = {
     "红色": (36, 40, 205), "橙色": (40, 130, 235), "黄色": (45, 200, 240),
     "绿色": (95, 200, 110), "青色": (200, 215, 40), "蓝色": (215, 130, 60),
@@ -118,6 +119,53 @@ def mesh_tetra(edge=40.0):
     return v, f
 
 
+def mesh_dodecahedron(r=22.0):
+    """正十二面体：20 顶点 / 12 个正五边形面（现场实拍货物之一）"""
+    phi = (1 + 5 ** 0.5) / 2.0
+    base = []
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            for sz in (-1, 1):
+                base.append([sx, sy, sz])
+    for s1 in (-1, 1):
+        for s2 in (-1, 1):
+            base.append([0, s1 / phi, s2 * phi])
+            base.append([s1 / phi, s2 * phi, 0])
+            base.append([s1 * phi, 0, s2 / phi])
+    V = np.array(base, float)
+    V = V / np.linalg.norm(V, axis=1).max() * r            # 归一化到外接半径 r
+    V[:, 2] -= V[:, 2].min()                               # 底面落在 z=0
+    # 面心方向 = 二十面体顶点方向；每个面取最近的 5 个顶点并按角度排序
+    ico = []
+    for s1 in (-1, 1):
+        for s2 in (-1, 1):
+            ico += [[0, s1, s2 * phi], [s1, s2 * phi, 0], [s1 * phi, 0, s2]]
+    faces = []
+    for c in np.array(ico, float):
+        c = c / np.linalg.norm(c)
+        d = V @ c
+        idx = np.argsort(-d)[:5]
+        centre = V[idx].mean(0)
+        n = np.cross(V[idx[1]] - V[idx[0]], V[idx[2]] - V[idx[0]])
+        if np.dot(n, centre) < 0:                          # 统一为外法线方向
+            n = -n
+        u = V[idx[0]] - centre
+        u = u / np.linalg.norm(u)
+        w = np.cross(c, u)
+        ang = [math.atan2(np.dot(V[i] - centre, w), np.dot(V[i] - centre, u)) for i in idx]
+        faces.append([int(idx[k]) for k in np.argsort(ang)])
+    return V, faces
+
+
+def mesh_cone(r=20.0, h=42.0, n=32):
+    """圆锥：底面圆 + 顶点"""
+    v = [[r * math.cos(2 * math.pi * i / n), r * math.sin(2 * math.pi * i / n), 0] for i in range(n)]
+    v.append([0, 0, h])
+    f = [[i, (i + 1) % n, n] for i in range(n)]
+    f.append(list(range(n - 1, -1, -1)))
+    return np.array(v, float), f
+
+
 def build_mesh(shape, scale=1.0):
     s = scale
     if shape == "正方体":
@@ -134,6 +182,10 @@ def build_mesh(shape, scale=1.0):
         return mesh_prism(5, 24 * s, 40 * s, phase=math.pi / 2)
     if shape == "六棱柱":
         return mesh_prism(6, 23 * s, 40 * s, phase=math.pi / 2)
+    if shape == "正十二面体":
+        return mesh_dodecahedron(21.5 * s)
+    if shape == "圆锥":
+        return mesh_cone(19 * s, 40 * s)
     raise ValueError(shape)
 
 
@@ -508,7 +560,8 @@ def main():
                                     "青色": "cyan", "蓝色": "blue", "紫色": "purple", "黑色": "black",
                                     "白色": "white"}.get(cls_name, cls_name)
                         cls_name = {"正方体": "cube", "长方体": "cuboid", "圆柱": "cylinder", "球": "ball",
-                                    "正四面体": "tetra", "五棱柱": "prism5", "六棱柱": "prism6"}.get(cls_name, cls_name)
+                                    "正四面体": "tetra", "五棱柱": "prism5", "六棱柱": "prism6",
+                                    "正十二面体": "dodecahedron", "圆锥": "cone"}.get(cls_name, cls_name)
                         d = os.path.join(out, "attributes", task, cls_name)
                         os.makedirs(d, exist_ok=True)
                         cv2.imwrite(os.path.join(d, "{0}_{1}.jpg".format(name, len(px_sizes))),

@@ -109,3 +109,31 @@ python3 tools/build_trt_engine.py --onnx exports_clean/best_fp32.onnx \
 ```
 部署：`cp engines/*.engine ../sort-web/models/yolo/`，compose 里设 `ENGINE=trt`
 （`server/yolo_server.py` 已支持 `ENGINE=trt`，用 pycuda + TensorRT runtime 执行）。
+
+## 8. 域差异（sim-to-real gap）实测与修复 —— 第 1 项优化
+
+**问题**：干净子集模型在合成验证集上 mAP50 0.995，但拿到 175 张实拍图上推理时：
+```
+实拍(60 张)：最高置信 0.266 | conf≥0.5 命中 0/60 | ≥0.35 0 | ≥0.15 19 | ≥0.05 53
+合成(14 张)：最高置信 0.737 | conf≥0.5 命中 2/14 | ≥0.35 8 | ≥0.15 13 | ≥0.05 14
+```
+→ **合成域验证集给出的高分是虚高的**；实拍图上模型"看得见但不敢确定"（低置信），
+直接用于现场会在 conf 0.35 下零检出。
+
+**修复（两步）**：
+1. `tools/pseudo_label_real.py`：用当前检测器对实拍图做**低阈值伪标注**，
+   并与几何预标注交叉验证 IoU → trust=high/medium，输出 `data/pseudo_real`（含 provenance.json）；
+2. `tools/build_mix_v3.py`：组装面向真实域的数据集 —— **验证集以实拍为主**（28 实拍 + 10 生成），
+   训练集 = 人工标注 18 + 实拍几何标注 111（经面积/长宽比/越界过滤，剔除 5 张不合理）
+   + 生成图 50 + 伪标注 2 = 181 张；生成图面积上限放宽到 0.80（合成图物体天生占画面大）。
+   然后从干净子集模型**微调**（AdamW lr0 5e-4，30 epochs，温和增强）。
+
+```bash
+python3 tools/pseudo_label_real.py --weights runs/.../best.pt --real-dir 工创/图 \
+        --labeled-dir 工创/图/X-AnyLabeling --geo-labels data/real_synth_mix/labels/train --out data/pseudo_real
+python3 tools/build_mix_v3.py --mixed data/real_synth_mix --pseudo-dir data/pseudo_real --out data/mix_v3
+python3 train_detection.py --config config/train_v3.yaml --base runs/.../best.pt --device cpu
+```
+
+**教训**：任何宣称的 mAP 都必须标注**在哪个域上评估**；合成域评估只能证明"学到了合成分布"。
+后续现场采集的实拍图应直接进 `mix_v3` 的验证集，形成"实拍闭环评估"。

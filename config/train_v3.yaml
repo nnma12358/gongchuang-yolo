@@ -1,0 +1,31 @@
+# 真实域微调配方（从干净子集模型出发，适配现场实拍）
+root: "/home/xxxffyy/工创/工创yolo/data/mix_v3"
+detection_classes: ["goods"]
+model: "yolov8n"
+imgsz: 640
+epochs: 30
+batch: 16
+patience: 10
+optimizer: "AdamW"
+lr0: 0.0005          # 微调：比从头训练低一档
+lrf: 0.01
+warmup_epochs: 2.0
+freeze: 0
+aug:
+  hsv_h: 0.04
+  hsv_s: 0.5
+  hsv_v: 0.4
+  fliplr: 0.5
+  flipud: 0.0
+  degrees: 12.0
+  translate: 0.10
+  scale: 0.4
+  mosaic: 0.6
+  close_mosaic: 8
+  mixup: 0.0
+  copy_paste: 0.0
+  erase: 0.25
+  cos_lr: true
+  workers: 8
+acceptance:
+  detect_map50: 0.80
