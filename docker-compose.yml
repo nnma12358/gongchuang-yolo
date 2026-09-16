@@ -2,16 +2,13 @@
 # PC 端 · Node 22 前端调试容器（Svelte 5）
 # ------------------------------------------------------------
 #   docker compose up -d --build      → 调试地址 http://localhost:5173
-#   docker compose logs -f            → Vite 日志
-#   bash scripts/dev-reload.sh        → 改完代码后重建并重启（秒级：依赖层有缓存）
+#   docker compose logs -f            → Vite 日志（HMR 实时生效，改完即刷新）
 #
-# 设计说明（为什么不挂载源码）：
-#   源码随镜像一起构建（Dockerfile 里 COPY），**不依赖 Docker Desktop 的 WSL 绑定挂载服务**
-#   —— 该服务在 Desktop 重启后常失效（表现为容器内 /app/src 为空、页面报
-#   “src/app.html does not exist”）。改代码后执行：bash scripts/dev-reload.sh
-#   若要启用真正的热更新（HMR）：在 Docker Desktop 打开
-#   Settings → Resources → WSL integration 并勾选本发行版，然后取消下面
-#   docker-compose.yml 中 `./src:/app/src` 的注释。
+# ⚠ 必须用 **WSL 里的 docker CLI**（/usr/bin/docker），不要用 Windows 的 docker.exe：
+#   docker.exe 会把 -v 的源路径按 Windows 路径解析，挂 /home/... 得到的是**空目录**
+#   （表现为容器内 /app/src 为空、页面报 “src/app.html does not exist”）。
+#   WSL 里的 docker CLI 走 Docker Desktop 的 docker-desktop-bind-mounts，
+#   中文路径 + 源码热更新都正常（已实测）。
 #
 # 说明：PC 容器只是前端壳，/api/** 由 src/lib/server/proxy.js 代理到 Jetson 实际服务。
 # ============================================================
@@ -26,10 +23,11 @@ services:
     ports:
       - "5173:5173"
     volumes:
-      # 仅数据卷（命名卷由 Docker 引擎管理，不依赖发行版挂载服务）
+      # 源码挂载 → Vite HMR 即时生效，改代码不用重建镜像
+      - ./src:/app/src
+      - ./static:/app/static
+      # 数据卷（命名卷由 Docker 引擎管理）
       - sort-dev-data:/app/data
-      # 需要 HMR 热更新时取消注释（前提：Desktop 已启用本发行版的 WSL integration）
-      # - ./src:/app/src
     environment:
       - NODE_ENV=development
       # 视觉容器（Jetson :8100）与网关容器（Jetson :80）地址。
