@@ -335,7 +335,23 @@ def post_process(img, scene, rng):
     return img
 
 
-def sample_scene(rng, per_image, imgsz, tray_mm, goods_mm, shapes, colors):
+def weighted_shape(rng, shapes, prism_weight=1.0):
+    """按权重采样形状（棱柱可加权，比赛货物以多面体/棱柱为主）"""
+    weights = []
+    for s in shapes:
+        w = prism_weight if s in ("五棱柱", "六棱柱") else 1.0
+        weights.append(w)
+    total = sum(weights)
+    r = rng.random() * total
+    acc = 0.0
+    for s, w in zip(shapes, weights):
+        acc += w
+        if r <= acc:
+            return s
+    return shapes[-1]
+
+
+def sample_scene(rng, per_image, imgsz, tray_mm, goods_mm, shapes, colors, prism_weight=1.0):
     W, H = imgsz
     cam_h = REAL["cam_height"] * rng.uniform(0.85, 1.15)          # 远近（装夹高度误差）
     scene = {
@@ -365,7 +381,7 @@ def sample_scene(rng, per_image, imgsz, tray_mm, goods_mm, shapes, colors):
         gx, gy = idx % grid, idx // grid
         cx = -tray_mm / 2 + cell * (gx + 0.5) + rng.uniform(-cell * 0.18, cell * 0.18)
         cy = -tray_mm / 2 + cell * (gy + 0.5) + rng.uniform(-cell * 0.18, cell * 0.18)
-        shape = rng.choice(shapes)
+        shape = weighted_shape(rng, shapes, prism_weight)
         color = rng.choice(colors)
         scale = rng.uniform(0.85, 1.05)                           # 尺寸公差（≤40mm）
         verts, faces = build_mesh(shape, scale)
@@ -423,6 +439,10 @@ def main():
     ap.add_argument("--out", default="data/synth", help="输出目录")
     ap.add_argument("--n", type=int, default=400, help="图片数量")
     ap.add_argument("--per-image", type=int, default=1, help="每张图货物数量（1=属性集，2~4=检测集）")
+    ap.add_argument("--prefix", default="synth", help="文件名前缀（多批次生成到同一目录时区分）")
+    ap.add_argument("--start-index", type=int, default=0, help="起始序号（追加生成时避免覆盖）")
+    ap.add_argument("--prism-weight", type=float, default=1.0,
+                    help="棱柱（五棱柱/六棱柱）采样加权，>1 提高出现概率")
     ap.add_argument("--imgsz", type=int, nargs=2, default=list(REAL["imgsz"]), help="分辨率 W H")
     ap.add_argument("--val-ratio", type=float, default=0.15)
     ap.add_argument("--shapes", nargs="*", default=SHAPES)
@@ -448,9 +468,9 @@ def main():
     for i in range(args.n):
         split = "val" if rng.random() < args.val_ratio else "train"
         scene = sample_scene(rng, args.per_image, (W, H), REAL["tray_mm"], REAL["goods_mm"],
-                             args.shapes, args.colors)
+                             args.shapes, args.colors, args.prism_weight)
         img, boxes, K = render(scene, W, H, rng)
-        name = "synth_{0:06d}".format(i)
+        name = "{0}_{1:06d}".format(args.prefix, args.start_index + i)
         img_path = os.path.join(out, "images", split, name + ".jpg")
         os.makedirs(os.path.dirname(img_path), exist_ok=True)
         quality = int(rng.uniform(85, 96))                 # 模拟相机压缩
