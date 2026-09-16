@@ -36,4 +36,8 @@ out = {"tag": "$TAG", "split_mode": json.load(open('data/mix_v3/subset_summary.j
 print("RESULT %s" % json.dumps(out, ensure_ascii=False))
 json.dump(out, open('runs/eval_$TAG.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
 PY
+echo "=== [$TAG] 误检专项（误检/图 · 漏检/图 · 纯背景图检出）==="
+"$PY" tools/eval_fp.py --weights "runs/best_$TAG.pt" --data data/mix_v3 \
+    --data2 data/negatives --device 0 --out "runs/fp_$TAG.json" 2>&1 | tail -16
+
 echo "=== [$TAG] 完成，权重 runs/best_$TAG.pt ==="

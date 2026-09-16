@@ -154,6 +154,10 @@ def main():
     ap = argparse.ArgumentParser(description="构建面向真实域的检测数据集")
     ap.add_argument("--mixed", default="data/real_synth_mix", help="混合集（含 dataset_summary.json）")
     ap.add_argument("--pseudo-dir", default="data/pseudo_real", help="模型伪标注目录（可选）")
+    ap.add_argument("--neg-dir", default=None,
+                    help="负样本目录（tools/mine_negatives.py 产出，空标签=背景）")
+    ap.add_argument("--neg-val", type=int, default=15,
+                    help="放进 val 的负样本张数（用于直接量误检率）")
     ap.add_argument("--out", default="data/mix_v3")
     ap.add_argument("--real-val", type=int, default=40, help="真实域验证集目标张数（整组进，可能超出）")
     ap.add_argument("--gen-val", type=int, default=10, help="验证集中的生成图张数")
@@ -254,8 +258,9 @@ def main():
 
     if os.path.isdir(args.out):
         shutil.rmtree(args.out)
-    stats = {"train": {"real_human": 0, "real_cv": 0, "gen": 0, "pseudo": 0, "dropped": 0},
-             "val": {"real": 0, "gen": 0, "dropped": 0}}
+    stats = {"train": {"real_human": 0, "real_cv": 0, "gen": 0, "pseudo": 0,
+                       "neg": 0, "dropped": 0},
+             "val": {"real": 0, "gen": 0, "neg": 0, "dropped": 0}}
     index = {}
 
     def put(name, split, kind, src_img, src_lbl=None, label_lines=None):  # noqa: C901
@@ -267,9 +272,9 @@ def main():
         lines = label_lines if label_lines is not None else read_label(src_lbl)
         max_area = 0.80 if kind == "gen" else 0.30
         lines = sanity(lines, W, H, max_area=max_area)
-        if not lines:
+        if not lines and kind != "neg":
             stats[split]["dropped"] += 1
-            return False
+            return False               # 负样本允许（本来就该是空标签）
         os.makedirs(os.path.join(args.out, "images", split), exist_ok=True)
         os.makedirs(os.path.join(args.out, "labels", split), exist_ok=True)
         dst_img = os.path.join(args.out, "images", split, name)
@@ -281,7 +286,7 @@ def main():
             shutil.copy2(img, dst_img)
         with open(os.path.join(args.out, "labels", split, os.path.splitext(name)[0] + ".txt"),
                   "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
+            f.write(("\n".join(lines) + "\n") if lines else "")   # 空 = 负样本
         stats[split][kind] = stats[split].get(kind, 0) + 1
         index[name] = {"split": split, "kind": kind, "boxes": len(lines)}
         return True
@@ -300,6 +305,18 @@ def main():
             put(n, "train", "real_cv", find_img(n), find_lbl(n))
         for n in val_real:
             put(n, "val", "real", find_img(n), find_lbl(n))
+    # 负样本（背景图，空标签）：大多进 train，少量进 val 用于量化误检
+    if args.neg_dir:
+        nd = args.neg_dir if os.path.isabs(args.neg_dir) else os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", args.neg_dir)
+        negs = sorted(glob.glob(os.path.join(nd, "images", "*.*")))
+        random.shuffle(negs)
+        for i, p in enumerate(negs):
+            split = "val" if i < args.neg_val else "train"
+            put(os.path.basename(p), split, "neg", p, None, label_lines=[])
+        print("[mix_v3] 负样本：train %d / val %d（val 用于量误检率）"
+              % (max(0, len(negs) - args.neg_val), min(args.neg_val, len(negs))))
+
     for n in train_gen:
         put(n, "train", "gen", find_img(n), find_lbl(n))
     for n in val_gen:

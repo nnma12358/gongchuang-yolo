@@ -80,7 +80,8 @@ def hamming(a, b):
 
 
 def is_real(stem):
-    return not stem.startswith("gene_")
+    """实拍图：只有 real_*。负样本(neg_*)是背景裁片、gen_* 是合成图，都不参与泄漏判定。"""
+    return stem.startswith("real_")
 
 
 def main():
