@@ -1,0 +1,28 @@
+# ============================================================
+# PC 端 · Node 22 生产预览（构建产物自检 / 演示用）
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   访问: http://localhost:8090
+# ============================================================
+services:
+  sort-node:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: sort-sage:node22
+    container_name: sort-node22
+    restart: unless-stopped
+    ports:
+      - "8090:3000"
+    volumes:
+      - sort-node-data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+      - DISPLAY_HOLD_SECONDS=${DISPLAY_HOLD_SECONDS:-3.0}
+      - VISION_URL=${VISION_URL:-}
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  sort-node-data:
+    name: sort-node-data

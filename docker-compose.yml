@@ -1,0 +1,50 @@
+# ============================================================
+# PC 端 · Node 22 前端调试容器（Svelte 5）
+# ------------------------------------------------------------
+#   docker compose up -d --build      → 调试地址 http://localhost:5173
+#   docker compose logs -f            → Vite 日志
+#   bash scripts/dev-reload.sh        → 改完代码后重建并重启（秒级：依赖层有缓存）
+#
+# 设计说明（为什么不挂载源码）：
+#   源码随镜像一起构建（Dockerfile 里 COPY），**不依赖 Docker Desktop 的 WSL 绑定挂载服务**
+#   —— 该服务在 Desktop 重启后常失效（表现为容器内 /app/src 为空、页面报
+#   “src/app.html does not exist”）。改代码后执行：bash scripts/dev-reload.sh
+#   若要启用真正的热更新（HMR）：在 Docker Desktop 打开
+#   Settings → Resources → WSL integration 并勾选本发行版，然后取消下面
+#   docker-compose.yml 中 `./src:/app/src` 的注释。
+#
+# 说明：PC 容器只是前端壳，/api/** 由 src/lib/server/proxy.js 代理到 Jetson 实际服务。
+# ============================================================
+services:
+  svelte-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sort-sage:svelte-dev
+    container_name: sort-svelte-dev
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    volumes:
+      # 仅数据卷（命名卷由 Docker 引擎管理，不依赖发行版挂载服务）
+      - sort-dev-data:/app/data
+      # 需要 HMR 热更新时取消注释（前提：Desktop 已启用本发行版的 WSL integration）
+      # - ./src:/app/src
+    environment:
+      - NODE_ENV=development
+      # 视觉容器（Jetson :8100）与网关容器（Jetson :80）地址。
+      # PC 容器只做前端调试与显示；识别与自动分拣循环都跑在 Jetson 端。
+      # 例：VISION_URL=http://192.168.1.50:8100  GATEWAY_URL=http://192.168.1.50
+      - VISION_URL=${VISION_URL:-}
+      - GATEWAY_URL=${GATEWAY_URL:-}
+      # 分拣信息在屏最短保持时间（秒）—— 赛项“显示后再分拣下一件”
+      - DISPLAY_HOLD_SECONDS=${DISPLAY_HOLD_SECONDS:-3.0}
+      - DATA_DIR=/app/data
+    command: ["npm", "run", "dev", "--", "--port", "5173"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  sort-dev-data:
+    name: sort-dev-data

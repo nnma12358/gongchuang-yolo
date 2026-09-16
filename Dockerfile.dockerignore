@@ -1,0 +1,47 @@
+# ============================================================
+# PC 端调试镜像（Dockerfile）专属忽略清单
+# Docker 规则：存在 <Dockerfile>.dockerignore 时，忽略 .dockerignore
+# 本镜像只做前端调试壳：只需要 src/ 与构建配置，不需要模型/产物/后端脚本
+# ============================================================
+
+# 与前端无关（PC 镜像不需要）
+models/
+build/
+server/
+scripts/
+deploy/
+dist/
+data/
+*.tar
+*.tar.gz
+
+# Node
+node_modules/
+.svelte-kit/
+.vite/
+npm-debug.log*
+
+# Python / 环境
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
+venv/
+
+# 环境变量与本地文件
+.env
+.env.*
+!.env.example
+watch.ps1
+
+# Git / IDE / OS / 文档
+.git/
+.gitignore
+.gitattributes
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+*.md
+!README.md

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  CycloneDDS 配置（ROS 2 Foxy 容器与宿主机 ROS 2 互通）
+  ------------------------------------------------------------
+  用途：host 网络模式下，让容器内 ROS 2 节点与 Jetson 宿主机（或其它容器）上的
+        Astra 相机节点、机械臂驱动互相发现。默认走 multicast 回环；
+       若现场交换机/内核禁用了 multicast，可打开 Peers 段显式列出对端 IP。
+  启用：docker-compose.jetson.yml 中
+        RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+        CYCLONEDDS_URI=file:///app/cyclonedds.xml
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <!-- 容器 host 网络下通常使用默认接口即可；多网卡时可显式指定，例如 lo / eth0 -->
+        <NetworkInterface autodetermine="true"/>
+      </Interfaces>
+      <AllowMulticast>default</AllowMulticast>
+      <MaxMessageSize>65500B</MaxMessageSize>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <Peers>
+        <!-- 现场禁用 multicast 时，把 jetson 本机与 PC 的 IP 填进来（示例）：
+        <Peer address="127.0.0.1"/>
+        <Peer address="192.168.1.50"/>
+        -->
+      </Peers>
+    </Discovery>
+    <Internal>
+      <Watermarks>
+        <WhcHigh>500kB</WhcHigh>
+      </Watermarks>
+    </Internal>
+  </Domain>
+</CycloneDDS>

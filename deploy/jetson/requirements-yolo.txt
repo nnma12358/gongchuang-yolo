@@ -1,0 +1,10 @@
+# Jetson · YOLO 目标检测容器（Python 3.6）
+# opencv / numpy 由基础镜像 apt 提供（python3-opencv 自带 DNN，可加载 ONNX）
+# 可选 onnxruntime：ENGINE=ort 时启用（aarch64 轮子按需自行安装）
+
+fastapi==0.68.2
+uvicorn==0.15.0
+pydantic==1.9.2
+starlette==0.14.2
+python-multipart==0.0.5
+typing-extensions==4.1.1

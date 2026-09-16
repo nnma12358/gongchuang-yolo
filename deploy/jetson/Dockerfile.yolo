@@ -1,0 +1,60 @@
+# ============================================================
+# Jetson Nano · YOLO 目标检测容器（视觉三层之“检测层”）
+# ------------------------------------------------------------
+# 基镜像：NVIDIA L4T r32.7.1（JetPack 4.6.1，aarch64，Python 3.6）
+# 职责：只做目标检测（YOLOv8 ONNX，OpenCV DNN / 可选 ONNX Runtime）
+# 端口：8101
+#
+# 模型来源：工创yolo 项目
+#   python train_detection.py --config config/sorting_competition.yaml --epochs 150
+#   python export_models.py   --config config/sorting_competition.yaml --imgsz 960
+#   产物 best.onnx → 本仓库 models/yolo/best.onnx（compose 只读挂载 /app/models）
+#
+# 构建（项目根目录）：
+#   docker build -f deploy/jetson/Dockerfile.yolo -t sort-yolo:jetson .
+# ============================================================
+FROM nvcr.io/nvidia/l4t-base:r32.7.1
+
+RUN set -e; \
+    if [ -f /etc/apt/sources.list ]; then \
+        cp /etc/apt/sources.list /etc/apt/sources.list.bak; \
+        sed -i -e 's@http://ports.ubuntu.com/@http://mirrors.aliyun.com/@g' \
+               -e 's@http://archive.ubuntu.com/@http://mirrors.aliyun.com/@g' \
+               -e 's@http://security.ubuntu.com/@http://mirrors.aliyun.com/@g' \
+               /etc/apt/sources.list || true; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-dev build-essential \
+        python3-numpy python3-opencv python3-pil \
+        curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+RUN python3 -m pip install --no-cache-dir --upgrade \
+        -i https://mirrors.aliyun.com/pypi/simple/ "pip<22" "setuptools<60" wheel \
+    && rm -rf /root/.cache/pip/*
+
+COPY deploy/jetson/requirements-yolo.txt /app/requirements.txt
+RUN pip3 install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ \
+        -r /app/requirements.txt && rm -rf /root/.cache/pip/*
+
+# 仅检测服务（模型通过 /app/models 挂载进来，便于换模型不重建镜像）
+COPY server/yolo_server.py /app/
+
+ENV PORT=8101
+ENV MODEL_PATH=/app/models/yolo/best.onnx
+ENV CLASSES_JSON=/app/models/yolo/classes.json
+ENV IMGSZ=960                 # 与训练 imgsz 保持一致（40mm 小目标建议 960）
+ENV CONF_THRES=0.35
+ENV IOU_THRES=0.45
+ENV ENGINE=opencv             # opencv | ort（ort 需自行安装 onnxruntime）
+ENV OMP_NUM_THREADS=4
+ENV OPENBLAS_NUM_THREADS=4
+
+EXPOSE 8101
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD curl -fsS http://localhost:8101/health || exit 1
+
+CMD ["python3", "yolo_server.py"]

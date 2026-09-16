@@ -1,0 +1,59 @@
+# ============================================================
+# Jetson Nano · CNN 属性识别容器（视觉三层之“属性层”）
+# ------------------------------------------------------------
+# 基镜像：NVIDIA L4T r32.7.1（JetPack 4.6.1，aarch64，Python 3.6）
+# 职责：只做属性分类 —— 颜色 / 形状 / 污渍缺陷（小 CNN，96×96 输入）
+# 端口：8102
+#
+# 模型来源：工创yolo 项目
+#   python train_attributes.py --config config/sorting_competition.yaml --task color --export-onnx
+#   python train_attributes.py --config config/sorting_competition.yaml --task shape --export-onnx
+#   python train_attributes.py --config config/sorting_competition.yaml --task stain --export-onnx
+#   产物 runs/attr/<task>/best.onnx → 本仓库 models/attr/<task>.onnx（含 <task>_classes.json）
+#
+# 构建（项目根目录）：
+#   docker build -f deploy/jetson/Dockerfile.cnn -t sort-cnn:jetson .
+# ============================================================
+FROM nvcr.io/nvidia/l4t-base:r32.7.1
+
+RUN set -e; \
+    if [ -f /etc/apt/sources.list ]; then \
+        cp /etc/apt/sources.list /etc/apt/sources.list.bak; \
+        sed -i -e 's@http://ports.ubuntu.com/@http://mirrors.aliyun.com/@g' \
+               -e 's@http://archive.ubuntu.com/@http://mirrors.aliyun.com/@g' \
+               -e 's@http://security.ubuntu.com/@http://mirrors.aliyun.com/@g' \
+               /etc/apt/sources.list || true; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-dev build-essential \
+        python3-numpy python3-opencv python3-pil \
+        curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+RUN python3 -m pip install --no-cache-dir --upgrade \
+        -i https://mirrors.aliyun.com/pypi/simple/ "pip<22" "setuptools<60" wheel \
+    && rm -rf /root/.cache/pip/*
+
+COPY deploy/jetson/requirements-cnn.txt /app/requirements.txt
+RUN pip3 install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ \
+        -r /app/requirements.txt && rm -rf /root/.cache/pip/*
+
+COPY server/cnn_server.py /app/
+
+ENV PORT=8102
+ENV MODEL_DIR=/app/models/attr
+ENV TASKS=color,shape,stain
+ENV IMG_SIZE=96
+ENV CROP_MARGIN=0.12
+ENV ENGINE=opencv
+ENV OMP_NUM_THREADS=2
+ENV OPENBLAS_NUM_THREADS=2
+
+EXPOSE 8102
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -fsS http://localhost:8102/health || exit 1
+
+CMD ["python3", "cnn_server.py"]

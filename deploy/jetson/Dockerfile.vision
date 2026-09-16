@@ -1,0 +1,64 @@
+# ============================================================
+# Jetson Nano · 视觉容器（货物识别 + 标记输出）
+# ------------------------------------------------------------
+# 基镜像：NVIDIA L4T r32.7.1（JetPack 4.6.1，aarch64，Python 3.6）
+# 职责：独占相机 → 连续识别 → 输出标记（marks JSON / 带框 JPEG）
+# 对外端口：8100（网关容器通过 VISION_URL=http://127.0.0.1:8100 调用）
+#
+# 构建（项目根目录，上下文必须是仓库根）：
+#   docker build -f deploy/jetson/Dockerfile.vision -t sort-vision:jetson .
+# ============================================================
+FROM nvcr.io/nvidia/l4t-base:r32.7.1
+
+# 国内网络：先切阿里云 apt 镜像（L4T 基础镜像默认走 archive.ubuntu.com，国内常超时）
+RUN set -e; \
+    if [ -f /etc/apt/sources.list ]; then \
+        cp /etc/apt/sources.list /etc/apt/sources.list.bak; \
+        sed -i -e 's@http://ports.ubuntu.com/@http://mirrors.aliyun.com/@g' \
+               -e 's@http://archive.ubuntu.com/@http://mirrors.aliyun.com/@g' \
+               -e 's@http://security.ubuntu.com/@http://mirrors.aliyun.com/@g' \
+               /etc/apt/sources.list || true; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-dev build-essential \
+        python3-numpy python3-opencv python3-pil \
+        curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 升级 pip/setuptools（L4T 镜像自带 pip 9，装不了 manylinux2014 轮子）
+RUN python3 -m pip install --no-cache-dir --upgrade \
+        -i https://mirrors.aliyun.com/pypi/simple/ "pip<22" "setuptools<60" wheel \
+    && rm -rf /root/.cache/pip/*
+
+COPY deploy/jetson/requirements-vision.txt /app/requirements.txt
+RUN pip3 install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ \
+        -r /app/requirements.txt \
+    && rm -rf /root/.cache/pip/*
+
+# ---- 视觉服务 + 识别核心 + 货物图库 + 可选 ONNX 模型 ----
+COPY server/catalog.py server/detect_core.py server/vision_server.py /app/
+COPY models/ /app/models/
+
+ENV PORT=8100
+ENV CAMERA_SOURCE=auto          # auto | synthetic | index | url
+ENV CAMERA_INDEX=0
+ENV CAMERA_URL=
+ENV CAMERA_WIDTH=1280
+ENV CAMERA_HEIGHT=720
+ENV DETECT_ENGINE=classic       # classic(颜色+形状+污渍+二维码) | onnx(自训练模型)
+ENV MODEL_PATH=/app/models/yolov8n.onnx
+ENV VISION_FPS=10               # 采集/识别循环频率
+ENV STREAM_FPS=8                # 可选 MJPEG 推流频率
+ENV CONF_MIN=0.45
+ENV STAIN_DARK_RATIO=0.05
+ENV DEFECT_DARK_RATIO=0.14
+ENV JPEG_QUALITY=80
+
+EXPOSE 8100
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -fsS http://localhost:8100/health || exit 1
+
+CMD ["python3", "vision_server.py"]

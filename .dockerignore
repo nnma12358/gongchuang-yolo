@@ -1,0 +1,47 @@
+# ============================================================
+# Docker 构建上下文忽略（Jetson 两镜像共用；缩减上下文、加速构建）
+# 注意：build/ 与 models/ 是 Jetson 镜像必需内容，切勿在此排除
+# ============================================================
+
+# Node / 前端
+node_modules/
+.svelte-kit/
+npm-debug.log*
+.vite/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv-*/
+venv/
+.pytest_cache/
+
+# 运行时数据与产物（容器内由挂载卷生成，不应进镜像）
+data/
+dist/
+*.tar
+*.tar.gz
+logs/
+*.log
+
+# 环境变量（含 Jetson IP 等本机配置，禁止打进镜像）
+.env
+.env.*
+!.env.example
+
+# Git / IDE / OS
+.git/
+.gitignore
+.gitattributes
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+watch.ps1
+
+# 文档（镜像内不需要）
+*.md
+!README.md

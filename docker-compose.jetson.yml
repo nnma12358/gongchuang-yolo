@@ -1,0 +1,248 @@
+# ============================================================
+# Jetson Nano · 分拣系统（两容器：视觉 + 网关）—— 容器编排
+# ------------------------------------------------------------
+# 在项目根目录执行：
+#   docker compose -f docker-compose.jetson.yml up -d --build
+#   查看日志: docker compose -f docker-compose.jetson.yml logs -f
+#   停止:     docker compose -f docker-compose.jetson.yml down
+#
+# 端口与通信（host 网络，互相通过 localhost 访问）：
+#   检测容器  sort-yolo    :8101   YOLO 目标检测（自训练 best.onnx）
+#   属性容器  sort-cnn     :8102   颜色/形状/污渍缺陷（小 CNN ONNX）
+#   视觉容器  sort-vision  :8100   相机 + 三层编排 + 2.5D 高度 + 二维码 + 标记输出
+#   网关容器  sort-gateway :80     前端 SPA + 分拣规则 + 自动分拣循环
+#   网关 → 视觉: VISION_URL=http://127.0.0.1:8100
+#   网关 → ROS2 桥接:   ROBOT_URL=http://127.0.0.1:8120（ros_bridge_ros2.py，运行在 ros2 容器内）
+#   ROS2: 机械臂驱动 / Astra 相机 / MoveIt 等现有容器，与桥接共用 DDS
+#
+# 设备接入（相机 / 机械臂串口）：
+#   默认 privileged: true 可直接访问 /dev/video*（有相机时 CAMERA_SOURCE=auto 自动识别）；
+#   宿主机限制 privileged 时显式映射设备（相机 + /dev/wheeltec_controller）：
+#     docker compose -f docker-compose.jetson.yml -f docker-compose.jetson-devices.yml up -d
+#   无相机/无串口时保持默认即可（视觉回落到合成场景，机械臂走 dry-run）
+#
+# 显示屏（Jetson 本机 HDMI）：
+#   bash deploy/jetson/setup-autostart.sh     # 开机自启 + kiosk 全屏
+# ============================================================
+services:
+  # ---------------- YOLO 检测容器（视觉三层：检测层） ----------------
+  sort-yolo:
+    build:
+      context: .
+      dockerfile: deploy/jetson/Dockerfile.yolo
+    image: sort-yolo:jetson
+    container_name: sort-yolo
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=8101
+      - MODEL_PATH=/app/models/yolo/best.onnx
+      - CLASSES_JSON=/app/models/yolo/classes.json
+      - IMGSZ=${YOLO_IMGSZ:-960}          # 与训练 imgsz 一致（40mm 小目标建议 960）
+      - CONF_THRES=${YOLO_CONF:-0.35}
+      - IOU_THRES=${YOLO_IOU:-0.45}
+      - ENGINE=${YOLO_ENGINE:-opencv}     # opencv | ort
+      - OMP_NUM_THREADS=4
+      - OPENBLAS_NUM_THREADS=4
+    volumes:
+      - ./models:/app/models:ro           # best.onnx / classes.json（换模型不必重建镜像）
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1024M
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ---------------- CNN 属性容器（视觉三层：属性层） ----------------
+  sort-cnn:
+    build:
+      context: .
+      dockerfile: deploy/jetson/Dockerfile.cnn
+    image: sort-cnn:jetson
+    container_name: sort-cnn
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=8102
+      - MODEL_DIR=/app/models/attr
+      - TASKS=${CNN_TASKS:-color,shape,stain}
+      - IMG_SIZE=96
+      - CROP_MARGIN=0.12
+      - ENGINE=${CNN_ENGINE:-opencv}
+      - OMP_NUM_THREADS=2
+      - OPENBLAS_NUM_THREADS=2
+    volumes:
+      - ./models:/app/models:ro           # color/shape/stain.onnx + *_classes.json
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ---------------- 视觉容器（视觉三层：编排 + 标记 + 2.5D） ----------------
+  sort-vision:
+    build:
+      context: .
+      dockerfile: deploy/jetson/Dockerfile.vision
+    image: sort-vision:jetson
+    container_name: sort-vision
+    restart: unless-stopped
+    network_mode: host
+    # 访问 USB 相机（/dev/video*）；无相机时同样可启动（自动合成场景）
+    privileged: true
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=8100
+      - CAMERA_SOURCE=${CAMERA_SOURCE:-auto}      # auto | synthetic | index | url
+      - CAMERA_INDEX=${CAMERA_INDEX:-0}
+      - CAMERA_URL=${CAMERA_URL:-}
+      - CAMERA_WIDTH=${CAMERA_WIDTH:-1280}
+      - CAMERA_HEIGHT=${CAMERA_HEIGHT:-720}
+      # 三层识别：yolo 检测 + cnn 属性（classic=纯经典 CV；yolo=三层链路，失败自动回退）
+      - DETECT_ENGINE=${DETECT_ENGINE:-yolo}
+      - YOLO_URL=http://127.0.0.1:8101
+      - CNN_URL=http://127.0.0.1:8102
+      - MODEL_PATH=${MODEL_PATH:-/app/models/yolov8n.onnx}
+      - VISION_FPS=${VISION_FPS:-10}
+      - CONF_MIN=${CONF_MIN:-0.45}
+      - STAIN_DARK_RATIO=${STAIN_DARK_RATIO:-0.05}
+      - DEFECT_DARK_RATIO=${DEFECT_DARK_RATIO:-0.14}
+      # 相机源：默认直连 /dev/video0；也可指向 ros2 容器的 MJPEG（Astra 彩色）
+      - CAMERA_URL=${CAMERA_URL:-}
+      # 深度来源（ros2 容器的 16-bit PNG）与逐像素桌面参考（2.5D 定位软件标定产物）
+      - DEPTH_URL=${DEPTH_URL:-http://127.0.0.1:8123/depth.png}
+      - TABLE_REF_DIR=/app/calibration
+      # Nano 4 核：限制线程，避免与机械臂/ROS 抢 CPU
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
+      - OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-4}
+    volumes:
+      # 2.5D 定位软件的标定产物（table_reference.npz 等）只读挂载
+      - ${CALIBRATION_DIR:-./calibration}:/app/calibration:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1024M
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ---------------- 网关容器（前端 + 规则 + 自动分拣） ----------------
+  sort-gateway:
+    build:
+      context: .
+      dockerfile: deploy/jetson/Dockerfile
+    image: sort-gateway:jetson
+    container_name: sort-gateway
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=80
+      - DISPLAY_HOLD_SECONDS=${DISPLAY_HOLD_SECONDS:-3.0}
+      - VISION_URL=http://127.0.0.1:8100
+      - ROBOT_URL=${ROBOT_URL:-http://127.0.0.1:8120}   # ROS2 桥接；置空=不驱动机械臂
+      - CALIB_PATH=/app/data/calib.json           # 标定文件（scripts/calibrate.py 生成）
+      - GRASP_ENABLED=${GRASP_ENABLED:-1}         # 是否解算抓取位姿
+      - AUTO_INTERVAL=${AUTO_INTERVAL:-0.6}       # 自动分拣轮询间隔(秒)
+      - AUTO_CONFIRM_FRAMES=${AUTO_CONFIRM_FRAMES:-4}   # 连续 N 帧同类才入库
+      - AUTO_CONF_MIN=${AUTO_CONF_MIN:-0.6}
+      - AUTO_SINGLE_ITEM=${AUTO_SINGLE_ITEM:-1}   # 一次一件（赛项）
+      - AUTO_DRY_RUN=${AUTO_DRY_RUN:-1}           # 1=不实际驱动机械臂（联调）
+      - DETECT_ENGINE=${DETECT_ENGINE:-classic}
+      - MODEL_PATH=${MODEL_PATH:-/app/models/yolov8n.onnx}
+    volumes:
+      - sort-gateway-data:/app/data
+    depends_on:
+      sort-vision:
+        condition: service_healthy       # 等视觉容器相机就绪再启动，避免自动分拣首帧报错
+      sort-yolo:
+        condition: service_started
+      sort-cnn:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 768M
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ---------------- ROS 2 运行时容器（机械臂驱动 / Astra / MoveIt / 桥接） ----------------
+  # 与现场 Jetson 上的 ROS 2 Foxy 环境一致；host 网络 + CycloneDDS 与宿主机节点互通。
+  # 默认命令 = 启动 ROS2 桥接节点（HTTP :8120 ← 网关；ROS2 话题 → 机械臂）。
+  # 若你的驱动已有自己的镜像/工作空间，改 ROS2_IMAGE / ROS2_CMD 即可：
+  #   ROS2_IMAGE=my-robot:foxy ROS2_CMD="bash -lc 'source /ws/install/setup.bash && ros2 launch arm_bringup arm.launch.py'"
+  ros2:
+    image: ${ROS2_IMAGE:-ros:foxy-ros-base}
+    platform: linux/arm64
+    container_name: sort-ros2
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - TZ=Asia/Shanghai
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+      - CYCLONEDDS_URI=file:///app/cyclonedds.xml
+      # 桥接参数
+      - PORT=${BRIDGE_PORT:-8120}
+      - ARM_TOPIC=${ARM_TOPIC:-/arm/pick_place}
+      - ARM_SERVICE=${ARM_SERVICE:-}
+      - GATEWAY_URL=${GATEWAY_URL:-http://127.0.0.1}
+      - ROS_DRY_RUN=${ROS_DRY_RUN:-0}
+      - JOINT6_CLOSED=${JOINT6_CLOSED:-0.20}
+      - JOINT6_OPEN=${JOINT6_OPEN:-1.20}
+      - DEFAULT_PICK_Z=${DEFAULT_PICK_Z:-20.0}
+      # 深度/彩色 HTTP 节点（ROSTopic → HTTP，供视觉容器 DEPTH_URL/CAMERA_URL 使用）
+      - DEPTH_HTTP_PORT=${DEPTH_HTTP_PORT:-8123}
+      - COLOR_TOPIC=${COLOR_TOPIC:-/overhead_camera/color/image_raw}
+      - DEPTH_TOPIC=${DEPTH_TOPIC:-/overhead_camera/depth/image_raw}
+      - RELIABLE_QOS=${RELIABLE_QOS:-1}
+    volumes:
+      - ./deploy/jetson/ros_bridge_ros2.py:/app/ros_bridge_ros2.py:ro
+      - ./deploy/jetson/depth_http_node.py:/app/depth_http_node.py:ro
+      - ./deploy/jetson/cyclonedds.xml:/app/cyclonedds.xml:ro
+      # 现场 ROS2 工作空间（按实际路径改；不存在时 compose 会自动建空目录）
+      - ${ROS2_WS:-./.ros2_ws}:/root/ws
+    working_dir: /root/ws
+    command: >
+      bash -lc "python3 -m pip install --quiet --disable-pip-version-check
+      'fastapi<0.100' 'uvicorn<0.24' >/dev/null 2>&1 || true;
+      python3 /app/depth_http_node.py &
+      exec python3 /app/ros_bridge_ros2.py"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # ---------------- 兼容：ROS 1 桥接（仅当机械臂仍跑 ROS 1 时用） ----------------
+  # 默认不启动；需要时加 --profile ros1
+  ros-bridge:
+    image: ros:melodic-ros-base
+    platform: linux/arm64
+    container_name: sort-ros-bridge
+    restart: unless-stopped
+    network_mode: host
+    profiles: ["ros1"]
+    volumes:
+      - ./deploy/jetson/ros_bridge.py:/app/ros_bridge.py:ro
+    environment:
+      - ROS_MASTER_URI=http://127.0.0.1:11311
+      - PORT=8121
+      - ARM_ACTION=${ARM_ACTION:-/arm_pick_place}
+    command: ["python3", "/app/ros_bridge.py"]
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "2" }
+
+volumes:
+  sort-gateway-data:
+    name: sort-gateway-data

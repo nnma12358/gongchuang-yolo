@@ -1,0 +1,32 @@
+# ============================================================
+# 设备映射覆盖文件（宿主机限制 privileged 时使用）
+# ------------------------------------------------------------
+# 用法（与主编排叠加）：
+#   docker compose -f docker-compose.jetson.yml -f docker-compose.jetson-devices.yml up -d
+#
+# 覆盖内容：
+#   sort-vision : 关闭 privileged，显式映射 USB 相机
+#   ros2        : 映射机械臂串口（/dev/wheeltec_controller）、相机与串口设备组权限
+#
+# ⚠ 列出的设备节点必须真实存在，否则容器无法创建。
+#   无相机 / 未插控制板时不要使用本文件（主编排默认 privileged + dry-run 可直接跑）。
+# ============================================================
+services:
+  sort-vision:
+    privileged: false
+    devices:
+      - /dev/video0:/dev/video0
+      # 多相机按需追加：- /dev/video1:/dev/video1
+    group_add:
+      - video
+
+  ros2:
+    group_add:
+      - dialout          # 串口访问权限（STM32 机械臂控制板）
+      - video
+    devices:
+      - /dev/wheeltec_controller:/dev/wheeltec_controller   # udev 固定名（VID 1a86 PID 55d4）
+      - /dev/video0:/dev/video0                             # 末端相机 / Astra RGB
+      # 若机械臂串口尚未建立 udev 固定名，可临时用：
+      # - /dev/ttyUSB0:/dev/ttyUSB0
+      # 需要 USB 直通（复位/重连）时改为 privileged: true

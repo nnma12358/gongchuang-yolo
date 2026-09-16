@@ -1,0 +1,9 @@
+# Jetson · CNN 属性识别容器（Python 3.6）
+# 与小 CNN（TinyNet）ONNX 配套；opencv/numpy 走 apt
+
+fastapi==0.68.2
+uvicorn==0.15.0
+pydantic==1.9.2
+starlette==0.14.2
+python-multipart==0.0.5
+typing-extensions==4.1.1

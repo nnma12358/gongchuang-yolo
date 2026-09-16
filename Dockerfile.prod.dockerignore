@@ -1,0 +1,40 @@
+# ============================================================
+# PC 端生产预览镜像（Dockerfile.prod）专属忽略清单
+# 与前端的 Dockerfile.dockerignore 同理：只需源码与构建配置
+# ============================================================
+models/
+build/
+server/
+scripts/
+deploy/
+dist/
+data/
+*.tar
+*.tar.gz
+
+node_modules/
+.svelte-kit/
+.vite/
+npm-debug.log*
+
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
+venv/
+
+.env
+.env.*
+!.env.example
+watch.ps1
+
+.git/
+.gitignore
+.gitattributes
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+*.md
+!README.md

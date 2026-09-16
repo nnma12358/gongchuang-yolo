@@ -1,0 +1,31 @@
+# ============================================================
+# sort-web（智能分拣装置 · 前端 + 网关 + 容器编排）
+# ============================================================
+# Node / 构建产物
+node_modules/
+.svelte-kit/
+build/
+.vite/
+
+# Python（本地验证环境）
+.venv-gw/
+.venv/
+__pycache__/
+*.py[cod]
+
+# 运行时数据与标定（现场产生，不入库）
+data/
+dist/
+*.log
+
+# 模型二进制（由 工创yolo 训练导出，体积大；部署时从 exports 拷贝）
+models/*.onnx
+models/yolo/*.onnx
+models/attr/*.onnx
+
+# 环境变量（含现场 IP）
+.env
+.env.*
+
+# 本机调试脚本
+watch.ps1
