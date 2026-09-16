@@ -26,8 +26,8 @@ models/
 
 | 文件 | 模型 | 实测指标 |
 |---|---|---|
-| `yolo/best.onnx` | YOLOv8n 单类 `goods`，真实域微调 | **mAP50 0.9427 / mAP50-95 0.6048**（真实域验证集：28 实拍 + 10 生成，最佳 epoch 20）；ONNX 侧 P 0.838 / R 0.816 / F1 0.827 |
-| `yolo/best_int8.onnx` | 动态 INT8 量化 | P 0.865 / R 0.842 / F1 **0.853**、3.36 MB（88 ms/帧 CPU，比 FP32 慢 3 倍，仅图体积小） |
+| `yolo/best.onnx` | YOLOv8n 单类 `goods`，**193 张实拍人工复核标注** + 分组切分微调 | **mAP50 0.9927 / mAP50-95 0.7158**（真实域验证集：40 实拍（全部人工核验）+ 10 生成，无跨集泄漏）；ONNX 侧 conf=0.45 时 **P 0.909 / R 1.000 / F1 0.952** |
+| `yolo/best_int8.onnx` | 动态 INT8 量化 | R 1.000 / P 0.694（conf0.25）· 3.36 MB（比 FP32 慢 3~5 倍，仅图体积小） |
 | `attr/color.onnx` | 颜色 CNN | 合成验证集 **100.00%**；跨域 8/8 实拍正确（white 0.99~1.00） |
 | `attr/shape.onnx` | 形状 CNN（9 类） | 合成验证集 **99.77%**；跨域 4/8 —— **仍不足**，需每形状补 30~50 张实拍裁剪 |
 | `attr/stain.onnx` | 表面 CNN | clean/stain/defect 三分类 |
@@ -43,7 +43,7 @@ curl http://localhost:8101/health     # ok:true, engine:opencv_dnn, model:best.o
 
 | 场景 | 用哪个 | 原因 |
 |---|---|---|
-| PC / x86 容器 | **FP32**（`best.onnx`） | 35 ms/帧；动态 INT8 反而慢到 120 ms |
+| PC / x86 容器 | **FP32**（`best.onnx`），`CONF_THRES=0.45` | 30 ms/帧；动态 INT8 反而慢到 120 ms。阈值实测：0.35→P0.82/R1.00，**0.45→P0.91/R1.00**，0.65→P1.00/R0.96 |
 | Jetson | **TensorRT INT8** | `工创yolo tools/build_trt_engine.py`，真正提速路径 |
 | 带宽/存储受限 | 动态 INT8 | 3.36 MB，精度不降 |
 | ~~ONNX Runtime 静态 INT8 (QDQ)~~ | **不要用** | 能加载但检测头输出全 0（最大置信 0.000），已在导出脚本中拦截 |
