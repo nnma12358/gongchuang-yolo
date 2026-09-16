@@ -63,6 +63,36 @@ def load_classes():
 
 
 def load_model():
+    if ENGINE == "trt":
+        # Jetson：直接加载 TensorRT 引擎（由 工创yolo tools/build_trt_engine.py 生成）
+        try:
+            import pycuda.autoinit  # noqa: F401
+            import pycuda.driver as cuda
+            import tensorrt as trt
+            logger_t = trt.Logger(trt.Logger.ERROR)
+            with open(MODEL_PATH, "rb") as f:
+                engine = trt.Runtime(logger_t).deserialize_cuda_engine(f.read())
+            if engine is None:
+                raise RuntimeError("引擎反序列化失败")
+            context = engine.create_execution_context()
+            stream = cuda.Stream()
+            io, bindings = {"inputs": [], "outputs": []}, []
+            for i in range(engine.num_bindings):
+                shape = engine.get_binding_shape(i)
+                size = int(np.prod(shape))
+                dtype = trt.nptype(engine.get_binding_dtype(i))
+                host = cuda.pagelocked_empty(size, dtype)
+                dev = cuda.mem_alloc(host.nbytes)
+                bindings.append(int(dev))
+                rec = {"name": engine.get_binding_name(i), "host": host, "dev": dev, "shape": shape}
+                io["inputs" if engine.binding_is_input(i) else "outputs"].append(rec)
+            STATE.update({"engine": "tensorrt", "model": MODEL_PATH, "loaded_at": time.time(),
+                          "trt": {"engine": engine, "context": context, "stream": stream,
+                                  "bindings": bindings, "io": io}})
+            logger.info("已加载 TensorRT 引擎: {0}".format(MODEL_PATH))
+            return
+        except Exception as e:
+            logger.warning("TensorRT 加载失败（{0}），回退 OpenCV DNN".format(e))
     if ENGINE == "ort":
         try:
             import onnxruntime as ort
@@ -101,7 +131,18 @@ def detect(bgr):
     blob, scale, dx, dy = letterbox(bgr, IMGSZ)
     boxes, confs, clss = [], [], []
 
-    if STATE["engine"] == "onnxruntime":
+    if STATE["engine"] == "tensorrt":
+        import pycuda.driver as cuda
+        t = STATE["trt"]
+        x = cv2.dnn.blobFromImage(blob, 1 / 255.0, (IMGSZ, IMGSZ), swapRB=True)
+        np.copyto(t["io"]["inputs"][0]["host"], np.ascontiguousarray(x).ravel())
+        cuda.memcpy_htod_async(t["io"]["inputs"][0]["dev"], t["io"]["inputs"][0]["host"], t["stream"])
+        t["context"].execute_async_v2(bindings=t["bindings"], stream_handle=t["stream"].handle)
+        for o in t["io"]["outputs"]:
+            cuda.memcpy_dtoh_async(o["host"], o["dev"], t["stream"])
+        t["stream"].synchronize()
+        preds = np.array(t["io"]["outputs"][0]["host"]).reshape(t["io"]["outputs"][0]["shape"])
+    elif STATE["engine"] == "onnxruntime":
         sess = _ORT["session"]
         inp = sess.get_inputs()[0].name
         x = cv2.dnn.blobFromImage(blob, 1 / 255.0, (IMGSZ, IMGSZ), swapRB=True)

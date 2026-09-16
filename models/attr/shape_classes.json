@@ -1,1 +1,9 @@
-{"0": "cube", "1": "cuboid", "2": "cylinder", "3": "ball", "4": "tetra", "5": "prism5", "6": "prism6"}
+{
+ "0": "cube",
+ "1": "cuboid",
+ "2": "cylinder",
+ "3": "ball",
+ "4": "tetra",
+ "5": "prism5",
+ "6": "prism6"
+}

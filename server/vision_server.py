@@ -482,6 +482,10 @@ def detect_via_services(frame):
                     det["class"] = matched["id"]
                     det["name"] = matched["name"]
                     det["label"] = matched["name"]
+                elif det["color"] != "未知" and det["shape"] != "未知":
+                    # 图库外组合：按“颜色+形状”生成货物名称（赛项要求名称必须正确）
+                    det["name"] = "{0}{1}".format(det["color"], det["shape"])
+                    det["label"] = det["name"]
         except Exception as e:
             logger.warning("CNN 属性服务不可用（{0}）→ 该帧属性留空".format(e))
     return dets
