@@ -153,3 +153,84 @@ python3 train_detection.py --config config/train_v3.yaml --base runs/.../best.pt
 **结论**：颜色可跨域（合成训练即够用）；**形状跨域必须用实拍数据训练**——
 18 张少样本注入只能到 4/8，建议每个形状补 30~50 张现场照片（保持与推理一致的裁剪方式）。
 这也是"实拍标注"这件事优先级最高的原因。
+
+---
+
+## 10. GPU 重训（RTX 4050 · CUDA）—— 本轮实测
+
+前面几轮训练都跑在 CPU（torch 2.6.0+cpu），40 epochs 要数小时，且中途被打断过几次。
+本轮把训练切到 GPU，配方（AdamW lr0 5e-4 / 40ep / patience 12 / 真实域验证集）不变，
+**只换算力**，结果直接拉高一大截。
+
+### 10.1 环境（PC 端，不依赖 Docker）
+
+Docker Hub 在本机约 0.45 MB/s，拉 `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime`
+（约 4.5 GB）要 2 小时以上；改用清华 PyPI 镜像（实测 5.14 MB/s）在 WSL 里直接建环境：
+
+```bash
+python3 -m venv /home/xxxffyy/gpu_env
+/home/xxxffyy/gpu_env/bin/pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    torch==2.6.0 torchvision==0.21.0 ultralytics onnx onnxruntime onnxslim \
+    opencv-python-headless pillow pyyaml matplotlib pandas
+# 校验：torch 2.6.0+cu124 · cuda_available True · NVIDIA GeForce RTX 4050 Laptop GPU
+```
+
+> Linux 版 PyPI 的 `torch` wheel 自带 CUDA 运行时（含 cudnn/cublas 等 nvidia-* 依赖），
+> **不需要** 额外指定 `--index-url download.pytorch.org`；Windows 版才是 CPU build。
+
+### 10.2 两个"卡住"陷阱（都已修）
+
+| 现象 | 根因 | 处理 |
+|---|---|---|
+| 训练开头空转数分钟 | ultralytics 8.4 的 **AMP 自检**会下载 GitHub 上的 `yolo26n.pt`，本机 GitHub 不可达 → 反复 30s 超时重试 | `config/train_v3.yaml: amp: false`（`train_detection.py` 已支持从 config 读 amp）；yolov8n@640/batch16 在 6 GB 显存上不需要 AMP |
+| 权重找不到 | `project="runs/detect"` 是**相对路径**时，ultralytics 会拼到 `SETTINGS.runs_dir` 后 → 实际落在 `runs/detect/runs/detect/train` | `train_detection.py` 改用 `os.path.abspath("runs/detect")`，输出固定在 `runs/detect/train/` |
+
+另外把 DejaVuSans 拷成 `~/.config/Ultralytics/Arial.ttf`，避免画图时再去 GitHub 下字体。
+
+### 10.3 结果（GPU vs CPU）
+
+```bash
+bash tools/retrain_v3_gpu.sh     # GPU 训练（约 4 分钟跑完 33 epochs，早停）
+bash tools/finish_v3_gpu.sh      # 真实域评估 → 导出量化 → ONNX 评估 → 部署
+```
+
+| 指标（真实域验证集 28 实拍 + 10 生成） | CPU（v3a） | **GPU（v3gpu）** |
+|---|---|---|
+| YOLO mAP50 | 0.8502 | **0.9427**（最佳 epoch 20） |
+| YOLO mAP50-95 | — | **0.6048** |
+| ONNX FP32 精确率 P | 0.9615 | 0.8378 |
+| ONNX FP32 召回率 R | 0.6579 | **0.8158** |
+| ONNX FP32 F1 | 0.7812 | **0.8267** |
+| 训练耗时 | 数小时（未跑完） | **≈4 分钟**（3.4 GB 显存，4.5 it/s） |
+| INT8 动态 P/R/F1 | — | 0.8649 / **0.8421** / **0.8533**（3.36 MB） |
+
+赛项验收线 `detect_map50 ≥ 0.80` → **达标（0.9427）**。
+精确率略降、召回率大涨，对分拣任务更有利（漏检比误检代价高）。
+
+### 10.4 静态 INT8 的"假成功"已堵住
+
+`tools/export_quantize.py` 里 QDQ 静态量化只做"能否加载"校验，结果**输出全 0 也能通过**，
+并按"静态优先"把废模型复制成 `best_int8.onnx` —— 本次实测最大置信 0.000、检出 0。
+现已加 `sanity_onnx()`：用真实图跑一遍，**有检出才认**，否则弃用并提示走 TensorRT：
+
+```
+静态 INT8 输出无效（最大置信 0.000，检出 0）→ 弃用
+```
+
+所以 PC/容器侧用 **FP32**（35 ms/帧，1280²）或 **动态 INT8**（3.36 MB，精度还略高但慢 3 倍）；
+**Jetson 上用 TensorRT INT8**（`tools/build_trt_engine.py`）才是真正的加速路径。
+
+### 10.5 部署与在线验证
+
+```bash
+# 已自动部署到 sort-web（供网关/容器加载）
+sort-web/models/yolo/best.onnx        12.27 MB  FP32
+sort-web/models/yolo/best_int8.onnx    3.36 MB  动态 INT8
+```
+
+用 sort-web 自己的服务代码（`server/yolo_server.py`, ENGINE=opencv）加载新模型实测：
+
+| 验证 | 结果 |
+|---|---|
+| `/health` | `ok:true, engine:opencv_dnn, model:best.onnx` |
+| 12 张实拍 val 图逐个 `/detect` | 11/12 检出，最高置信 0.527~0.965，单帧 50~71 ms |

@@ -101,15 +101,20 @@ def main():
         cache=bool(aug.get("cache", False)),
         workers=int(aug.get("workers", 8)),
         patience=int(cfg.get("patience", 30)),
-        project="runs/detect",
+        # 注意：ultralytics 会把“相对 project”拼到 SETTINGS.runs_dir 后面
+        # （runs/detect/runs/detect/train），必须用绝对路径才能固定输出位置。
+        project=os.path.abspath("runs/detect"),
         name="train",
         exist_ok=True,
         verbose=True,
         plots=True,
-        amp=True,
+        # AMP：默认关闭。ultralytics 8.4 的 AMP 自检会去 GitHub 下载 yolo26n.pt，
+        # 国内网络不可达时该自检会空转数分钟（并非训练卡住）。
+        # yolov8n@640/batch16 在 6GB 显存上不依赖 AMP。
+        amp=bool(cfg.get("amp", False)),
     )
 
-    best = os.path.join("runs/detect/train", "weights", "best.pt")
+    best = os.path.join(os.path.abspath("runs/detect"), "train", "weights", "best.pt")
     if os.path.exists(best):
         os.makedirs("runs/detect", exist_ok=True)
         shutil.copy(best, "runs/detect/best_final.pt")

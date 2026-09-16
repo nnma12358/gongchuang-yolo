@@ -166,9 +166,21 @@ def main():
             print("   {0}: 召回变化 {1:+.4f} · 精确率变化 {2:+.4f} · 加速 {3}x".format(
                 r["model"], -r["recall_drop"], -r["precision_drop"], r["speedup"]))
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+
+    def _jsonable(o):
+        """numpy/float32 → 原生类型（否则 json.dump 报 float32 not serializable）。"""
+        if isinstance(o, dict):
+            return {k: _jsonable(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [_jsonable(v) for v in o]
+        if hasattr(o, "item"):
+            return o.item()
+        return o
+
     with open(args.out, "w", encoding="utf-8") as f:
-        json.dump({"imgsz": args.imgsz, "conf": args.conf, "iou": args.iou,
-                   "val_images": len(images), "models": rows}, f, ensure_ascii=False, indent=2)
+        json.dump(_jsonable({"imgsz": args.imgsz, "conf": args.conf, "iou": args.iou,
+                             "val_images": len(images), "models": rows}),
+                  f, ensure_ascii=False, indent=2)
     print("\n报告:", args.out)
 
 

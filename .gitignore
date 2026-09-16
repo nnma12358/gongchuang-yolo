@@ -28,3 +28,5 @@ data/mix_v3/
 data/attr_ds/
 data/attr_ds2/
 exports_v3/
+# 导出/量化产物（含 GPU 流水线），体积大不入库
+exports*/

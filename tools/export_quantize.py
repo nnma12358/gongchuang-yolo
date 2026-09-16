@@ -94,6 +94,34 @@ def validate_onnx(path):
         return False, str(e)[:200]
 
 
+def sanity_onnx(path, images, imgsz, conf=0.25):
+    """输出合理性校验：QDQ 静态量化常出现“能加载但检测头输出全 0”的假成功。
+
+    返回 (ok, max_score, n_boxes)：任一真实图片上有检出才算通过。
+    """
+    import onnxruntime as ort
+    try:
+        sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+        name = sess.get_inputs()[0].name
+        best_score, best_n = 0.0, 0
+        for p in images[:8]:
+            x = preprocess(p, imgsz)
+            if x is None:
+                continue
+            out = np.asarray(sess.run(None, {name: x})[0])
+            if out.ndim == 3:
+                out = out[0]
+            if out.shape[0] < out.shape[1]:
+                out = out.T
+            scores = out[:, 4:]
+            mx = float(scores.max()) if scores.size else 0.0
+            n = int((scores.max(axis=1) > conf).sum()) if scores.size else 0
+            best_score, best_n = max(best_score, mx), max(best_n, n)
+        return (best_n > 0), best_score, best_n
+    except Exception as e:
+        return False, 0.0, 0
+
+
 def quantize_dynamic(src, dst):
     from onnxruntime.quantization import QuantType, quantize_dynamic
     quantize_dynamic(src, dst, weight_type=QuantType.QInt8, per_channel=False)
@@ -206,9 +234,19 @@ def main():
             if static_path is None:
                 static = None
             else:
-                static = static_path
-                print("   静态 INT8:", static, "%.2f MB（per_channel={0}）".format(
-                    per_channel, os.path.getsize(static) / 1e6))
+                # 假成功过滤：QDQ 静态量化“能加载”但检测头输出全 0 是常见现象
+                # （见 docs_TRAINING.md 量化章节），必须用真实图片验输出。
+                ok, mx, nb = sanity_onnx(static_path, calib_images, args.imgsz)
+                size_mb = os.path.getsize(static_path) / 1e6
+                if ok:
+                    static = static_path
+                    print("   静态 INT8: {0} {1:.2f} MB（per_channel={2}，最大置信 {3:.3f}，检出 {4}）".format(
+                        static_path, size_mb, per_channel, mx, nb))
+                else:
+                    static = None
+                    print("   静态 INT8 输出无效（最大置信 {0:.3f}，检出 {1}）→ 弃用，"
+                          "YOLOv8 检测头经 QDQ 静态量化后普遍塌陷；"
+                          "Jetson 请用 TensorRT INT8（tools/build_trt_engine.py）".format(mx, nb))
         except Exception as e:
             print("   静态量化失败:", str(e)[:160])
             static = None

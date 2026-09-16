@@ -11,6 +11,7 @@ lr0: 0.0005          # 微调：比从头训练低一档
 lrf: 0.01
 warmup_epochs: 2.0
 freeze: 0
+amp: false            # 关掉 AMP 自检（该自检需访问 GitHub 下载 yolo26n.pt）
 aug:
   hsv_h: 0.04
   hsv_s: 0.5
