@@ -22,6 +22,58 @@ _NET = None
 _NET_TRIED = False
 _LOCK = threading.Lock()
 
+# ---- 托盘 ROI：只接受"框中心"落在托盘区域内的检测 ----
+# 为什么需要：模型层面的负样本能把背景误检压到 0，但现场总会出现训练照片里没有的东西
+# （人手、机械臂、临时放的杂物）。货物一定在托盘上 → "区域"是最便宜也最可靠的兜底。
+# 规格（归一化 0~1）：
+#   矩形   "0.06,0.06,0.94,0.94"
+#   多边形 "0.10,0.08;0.90,0.10;0.92,0.90;0.08,0.88"（按顺序闭合）
+#   空/未设置 = 不启用
+_ROI = None
+LAST_ROI_DROPPED = 0
+
+
+def set_roi(spec):
+    """配置 ROI；返回解析后的多边形（未启用返回 None）"""
+    global _ROI
+    _ROI = None
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    try:
+        if ";" in spec:
+            pts = [[float(v) for v in p.split(",")[:2]] for p in spec.split(";") if p.strip()]
+        else:
+            x1, y1, x2, y2 = [float(v) for v in spec.split(",")[:4]]
+            pts = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+        if len(pts) < 3:
+            raise ValueError("至少 3 个点")
+        _ROI = pts
+        return pts
+    except Exception as e:
+        logger.warning("ROI 解析失败（已忽略）: %s  ← %s", spec, e)
+        return None
+
+
+def roi_enabled():
+    return _ROI is not None
+
+
+def _in_roi(cx, cy):
+    """射线法判断点是否在多边形内；未启用 ROI 时恒为 True"""
+    if _ROI is None:
+        return True
+    inside = False
+    n = len(_ROI)
+    for i in range(n):
+        x1, y1 = _ROI[i]
+        x2, y2 = _ROI[(i + 1) % n]
+        if (y1 > cy) != (y2 > cy):
+            xin = x1 + (cy - y1) * (x2 - x1) / (y2 - y1 + 1e-12)
+            if cx < xin:
+                inside = not inside
+    return inside
+
 
 def load_onnx(model_path):
     """可选：加载自训练 YOLO ONNX（失败返回 None，调用方回退经典引擎）"""
@@ -179,7 +231,34 @@ def analyze(bgr, conf_min=0.45, min_area_ratio=0.002, stain_th=0.05, defect_th=0
         })
 
     detections.sort(key=lambda d: d["area_ratio"], reverse=True)
+    detections = filter_roi(detections)
     return detections, qr_text, (w0, h0)
+
+
+def filter_roi(dets):
+    """按托盘 ROI 过滤检测（框中心落在区域外 → 丢弃）。
+
+    ⚠ 所有检测来源都必须走这里：经典引擎走 analyze()，而 yolo 容器路径
+    （vision_server.detect_via_services）是自己拼 dets 的，容易漏掉。
+    """
+    global LAST_ROI_DROPPED
+    LAST_ROI_DROPPED = 0
+    if _ROI is None:
+        return dets
+    kept = []
+    for d in dets:
+        bn = d.get("box_norm")
+        if not bn or len(bn) < 4:
+            kept.append(d)
+            continue
+        cx, cy = bn[0] + bn[2] / 2.0, bn[1] + bn[3] / 2.0
+        if _in_roi(cx, cy):
+            kept.append(d)
+        else:
+            LAST_ROI_DROPPED += 1
+    if LAST_ROI_DROPPED:
+        logger.debug("ROI 过滤掉 %d 个区域外检测", LAST_ROI_DROPPED)
+    return kept
 
 
 def attach_depth(detections, depth, desk_z=None, inner=0.5, table_ref=None):

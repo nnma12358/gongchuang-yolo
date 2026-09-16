@@ -51,6 +51,8 @@ DEPTH_URL = os.environ.get("DEPTH_URL", "")
 # 未提供时自动在 TABLE_REF_DIR 下寻找最新的 table_reference.npz
 TABLE_REF = os.environ.get("TABLE_REF", "")
 TABLE_REF_DIR = os.environ.get("TABLE_REF_DIR", "/app/calibration")
+# 托盘 ROI（归一化）：矩形 "x1,y1,x2,y2" 或多边形 "x1,y1;x2,y2;..."；空=不启用
+ROI_SPEC = os.environ.get("ROI", "")
 _TABLE_CACHE = {"ref": None, "tried": False}
 DEPTH_CACHE = {"ts": 0.0, "img": None}
 DETECT_ENGINE = os.environ.get("DETECT_ENGINE", "classic").lower()   # classic | yolo
@@ -69,6 +71,13 @@ LOOP_FPS = float(os.environ.get("VISION_FPS", "10"))       # 采集/识别循环
 STREAM_FPS = float(os.environ.get("STREAM_FPS", "8"))      # MJPEG 推流频率
 
 app = FastAPI(title="sort-vision", docs_url=None, redoc_url=None)
+
+# 托盘 ROI：启动即生效（货物一定在托盘上 → 区域外的一律不算货物）
+_ROI_PTS = detect_core.set_roi(ROI_SPEC)
+if _ROI_PTS:
+    logger.info("已启用托盘 ROI：%s（框中心在区域外的检测一律丢弃）", _ROI_PTS)
+else:
+    logger.info("未启用托盘 ROI（环境变量 ROI 为空）")
 
 # ==================== 相机与帧缓冲 ====================
 _frame_lock = threading.Lock()
@@ -332,6 +341,8 @@ async def detect_frame(max_age: float = 1.5):
         detect_core.attach_depth(dets, None, table_ref=load_table_reference())
     marks = {"ts": round(time.time(), 3), "frame_index": idx, "size": list(size),
              "detections": dets, "qr_text": qr_text, "engine": engine_used,
+             "roi_dropped": detect_core.LAST_ROI_DROPPED,
+             "roi": detect_core.roi_enabled(),
              "depth": bool(depth is not None), "depth_url": DEPTH_URL or None}
     with _marks_lock:
         _latest_marks.update(marks)
@@ -488,7 +499,7 @@ def detect_via_services(frame):
                     det["label"] = det["name"]
         except Exception as e:
             logger.warning("CNN 属性服务不可用（{0}）→ 该帧属性留空".format(e))
-    return dets
+    return detect_core.filter_roi(dets)
 
 
 # 属性标签英文 → 中文（与工创yolo 训练类别一致）

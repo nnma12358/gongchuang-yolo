@@ -112,6 +112,11 @@ services:
       - MODEL_PATH=${MODEL_PATH:-/app/models/yolov8n.onnx}
       - VISION_FPS=${VISION_FPS:-10}
       - CONF_MIN=${CONF_MIN:-0.45}
+      # 托盘 ROI（归一化）：矩形 "x1,y1,x2,y2" 或多边形 "x1,y1;x2,y2;..."；
+      # 留空=不启用。启用后"框中心在区域外"的检测一律丢弃 —— 现场出现人手/机械臂/
+      # 临时杂物时的兜底（模型负样本已把背景误检压到 0，这一层防的是训练集里没有的东西）。
+      # 建议按标定好的托盘范围填，例如留 6% 边距：  ROI=0.06,0.06,0.94,0.94
+      - ROI=${ROI:-}
       - STAIN_DARK_RATIO=${STAIN_DARK_RATIO:-0.05}
       - DEFECT_DARK_RATIO=${DEFECT_DARK_RATIO:-0.14}
       # 相机源：默认直连 /dev/video0；也可指向 ros2 容器的 MJPEG（Astra 彩色）

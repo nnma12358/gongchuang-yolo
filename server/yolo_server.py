@@ -21,9 +21,10 @@ yolo_server.py —— 目标检测容器（YOLO / ONNX）
   MODEL_PATH   默认 /app/models/yolo/best.onnx
   CLASSES_JSON 类别名文件（可选，如 /app/models/yolo/classes.json）
   IMGSZ        推理输入尺寸，默认 640（与训练一致；小目标可用 960）
-  CONF_THRES   置信度阈值，默认 0.45
-               （人工核验验证集实测：0.35→P0.82/R1.00 · 0.45→P0.91/R1.00 ·
-                 0.65→P1.00/R0.96。取 0.45：不丢目标的前提下压掉背景误检）
+  CONF_THRES   置信度阈值，默认 0.35
+               （加入 223 张背景负样本重训后的实测：0.25→误检0.06/图·漏检0.03/图，
+                 0.35~0.55→误检0.00/图·漏检0.03/图，0.65→漏检0.06/图。
+                 取 0.35：误检已为 0，留出余量应对现场新货物）
   IOU_THRES    NMS IoU，默认 0.45
   ENGINE       opencv（默认）| ort（onnxruntime，可选）
 """
@@ -40,7 +41,7 @@ logger = logging.getLogger("yolo")
 MODEL_PATH = os.environ.get("MODEL_PATH", "/app/models/yolo/best.onnx")
 CLASSES_JSON = os.environ.get("CLASSES_JSON", "")
 IMGSZ = int(os.environ.get("IMGSZ", "640"))
-CONF_THRES = float(os.environ.get("CONF_THRES", "0.45"))
+CONF_THRES = float(os.environ.get("CONF_THRES", "0.35"))
 IOU_THRES = float(os.environ.get("IOU_THRES", "0.45"))
 ENGINE = os.environ.get("ENGINE", "opencv").lower()
 PORT = int(os.environ.get("PORT", "8101"))
