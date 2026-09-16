@@ -5,7 +5,7 @@ PY=/home/xxxffyy/miao_llm_env/bin/python
 export YOLO_AUTOINSTALL=false
 exec > >(tee -a runs/finalize_v3.log) 2>&1
 echo "[1/4] 等待真实域微调结束 …"
-while pgrep -f "train_detection.py --config config/train_v3.yaml" >/dev/null; do sleep 20; done
+while pgrep -f "[t]rain_detection.py --config config/train_v3.yaml" >/dev/null; do sleep 20; done
 BEST=$(ls -t runs/detect/runs/detect/train*/weights/best.pt 2>/dev/null | head -1)
 [ -z "$BEST" ] && BEST=$(find runs -name best.pt | head -1)
 echo "[2/4] 权重 $BEST → 真实域验证集评估"

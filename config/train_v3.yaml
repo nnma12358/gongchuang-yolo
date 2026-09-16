@@ -3,9 +3,9 @@ root: "/home/xxxffyy/工创/工创yolo/data/mix_v3"
 detection_classes: ["goods"]
 model: "yolov8n"
 imgsz: 640
-epochs: 30
+epochs: 40
 batch: 16
-patience: 10
+patience: 12
 optimizer: "AdamW"
 lr0: 0.0005          # 微调：比从头训练低一档
 lrf: 0.01

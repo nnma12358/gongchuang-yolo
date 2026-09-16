@@ -90,6 +90,12 @@ def main():
         copy_paste=float(aug.get("copy_paste", 0.0)),  # 复制粘贴：密集/遮挡场景
         erasing=float(aug.get("erase", 0.1)),     # 随机擦除模拟遮挡与污渍
         cos_lr=bool(aug.get("cos_lr", False)),
+        # --- 小数据集稳定性（config 可配；默认沿用 ultralytics 行为）---
+        optimizer=str(cfg.get("optimizer", "auto")),
+        lr0=float(cfg.get("lr0", 0.01)),
+        lrf=float(cfg.get("lrf", 0.01)),
+        warmup_epochs=float(cfg.get("warmup_epochs", 3.0)),
+        freeze=int(cfg.get("freeze", 0)),
         # 小目标：关闭矩形推理，保证 letterbox 后尺度一致
         rect=False,
         cache=bool(aug.get("cache", False)),
