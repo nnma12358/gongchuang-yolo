@@ -12,8 +12,8 @@ ui_smoke_test.py —— 复核台 UI 冒烟测试（真浏览器，防"看不到
   3) **标注框真的画在图片上**（在框的边框像素上采样颜色）
   4) 拖拽能新建框
   5) 按 N 能并入模型建议框，且**重复按不会越加越多**（去重）
-  6) 按 Z 撤销、按 A 标记完成并跳下一张、按 ',' 返回上一张
-  7) 方向键能微调选中框
+  6) 拖边框能调整框大小（不是只能删掉重画）\n  7) 按 Z 撤销、按 A 标记完成并跳下一张、按 ',' 返回上一张
+  8) 方向键能微调选中框
 
 准备（只需一次）：
     pip install playwright
@@ -88,6 +88,17 @@ def main():
         pg.wait_for_timeout(500)
         n1 = pg.evaluate("()=>S.boxes.length")
         check("拖拽能新建框", n1 == n0 + 1, "%d → %d" % (n0, n1))
+
+        # 拖边框调整大小（回归：以前只能删掉重画）
+        nb = pg.evaluate("()=>S.boxes[S.sel].slice()")
+        cx = r[0] + r[2] * (nb[0] + nb[2])      # 右边框
+        cy = r[1] + r[3] * (nb[1] + nb[3] / 2)
+        pg.mouse.move(cx, cy); pg.mouse.down()
+        pg.mouse.move(cx + r[2] * 0.12, cy, steps=6); pg.mouse.up()
+        pg.wait_for_timeout(500)
+        na = pg.evaluate("()=>S.boxes[S.sel].slice()")
+        check("拖边框能调整大小", abs(na[2] - nb[2]) > 0.05,
+              "宽 %.3f → %.3f" % (nb[2], na[2]))
 
         # N 去重
         pg.keyboard.press("z"); pg.wait_for_timeout(300)

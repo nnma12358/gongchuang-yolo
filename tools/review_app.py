@@ -13,7 +13,7 @@ X-AnyLabeling 这类工具要点选、拖拽、按保存；这里把 90% 的情�
 然后浏览器打开（Windows 侧同样可访问）：  http://localhost:8770
 
 键盘（鼠标拖拽 = 在当前标注上继续画框/改框）：
-    鼠标拖拽     在空白处拖 = 新建框；在已有框上拖 = 移动该框
+    鼠标拖拽     空白处拖 = 新建框；框内拖 = 移动；**拖边框/角上的白色手柄 = 调整大小**
     A / Enter  标注正确，下一张（记为"已复核"）
     N          并入模型建议框（自动去重，不会越按越多；Shift+N 强制追加）
     Z          撤销本张所有修改    D / Del 删除选中的框    1..9 选中第 N 个框
@@ -72,7 +72,7 @@ PAGE = r"""<!doctype html>
     <div id="bar">
       <span class="pill" id="pos">-/-</span>
       <span id="name"></span>
-      <span style="margin-left:auto"><b>A</b> 正确·下一张 &nbsp;<b>N</b> 并入模型框 &nbsp;<b>拖拽</b> 画框 &nbsp;<b>Z</b> 撤销 &nbsp;<b>, .</b> 翻页 &nbsp;<b>W</b> 下一张未复核 &nbsp;<b>H</b> 帮助</span>
+      <span style="margin-left:auto"><b>A</b> 正确·下一张 &nbsp;<b>N</b> 并入模型框 &nbsp;<b>拖拽</b> 画框/拖边框调大小 &nbsp;<b>Z</b> 撤销 &nbsp;<b>, .</b> 翻页 &nbsp;<b>W</b> 下一张未复核 &nbsp;<b>H</b> 帮助</span>
     </div>
     <div id="stage"><canvas id="cv"></canvas></div>
     <div id="info"></div>
@@ -142,6 +142,12 @@ function draw(){
     ctx.strokeRect(b[0]*W,b[1]*H,b[2]*W,b[3]*H);
     ctx.fillStyle=on?'#ffd166':'#22d46e'; ctx.font='bold 14px sans-serif';
     ctx.fillText(String(k+1),b[0]*W+4,Math.min(H-4,b[1]*H+16));
+    if(on){                       // 选中框画 8 个手柄，提示"可以拖边框调大小"
+      const x1=b[0]*W, y1=b[1]*H, x2=x1+b[2]*W, y2=y1+b[3]*H;
+      ctx.fillStyle='#ffffff'; ctx.strokeStyle='#ffd166'; ctx.lineWidth=2;
+      [[x1,y1],[(x1+x2)/2,y1],[x2,y1],[x2,(y1+y2)/2],[x2,y2],[(x1+x2)/2,y2],[x1,y2],[x1,(y1+y2)/2]]
+        .forEach(([hx,hy])=>{ ctx.fillRect(hx-4,hy-4,8,8); ctx.strokeRect(hx-4,hy-4,8,8); });
+    }
   });
 }
 async function goto(k){
@@ -175,21 +181,56 @@ function hit(x,y){
     if(x>=b[0]&&x<=b[0]+b[2]&&y>=b[1]&&y<=b[1]+b[3]) return k;}
   return -1;
 }
+function edgeHit(x,y){        // 命中框的边/角 → 调整大小（阈值按画布像素算，手感稳定）
+  const tolX=8/Math.max(1,cv.width), tolY=8/Math.max(1,cv.height);
+  for(let k=S.boxes.length-1;k>=0;k--){
+    const b=S.boxes[k], x1=b[0], y1=b[1], x2=b[0]+b[2], y2=b[1]+b[3];
+    if(x<x1-tolX||x>x2+tolX||y<y1-tolY||y>y2+tolY) continue;
+    const l=Math.abs(x-x1)<=tolX, r=Math.abs(x-x2)<=tolX;
+    const t=Math.abs(y-y1)<=tolY, bo=Math.abs(y-y2)<=tolY;
+    if(l||r||t||bo) return {k:k, l:l, r:r, t:t, b:bo,
+                            x1:x1, y1:y1, x2:x2, y2:y2, cx:x, cy:y};
+  }
+  return null;
+}
 cv.onmousedown=e=>{
-  const [x,y]=norm(e); const k=hit(x,y);
-  if(k>=0){ S.sel=k; S.drag={mode:'move',x,y,box:S.boxes[k].slice()}; }
-  else { S.boxes.push([x,y,0,0]); S.sel=S.boxes.length-1;
-         S.drag={mode:'new',x,y,box:S.boxes[S.sel]}; }
+  const [x,y]=norm(e);
+  const eh=edgeHit(x,y);
+  if(eh){ S.sel=eh.k; S.drag={mode:'resize',eh:eh}; }
+  else { const k=hit(x,y);
+    if(k>=0){ S.sel=k; S.drag={mode:'move',x,y,box:S.boxes[k].slice()}; }
+    else { S.boxes.push([x,y,0,0]); S.sel=S.boxes.length-1;
+           S.drag={mode:'new',x,y,box:S.boxes[S.sel]}; } }
   draw();
 };
 cv.onmousemove=e=>{
   const [x,y]=norm(e);
-  if(!S.drag){ const k=hit(x,y); if(k!==S.hover){S.hover=k; cv.style.cursor=k>=0?'move':'crosshair';} return; }
-  const d=S.drag, b=d.box, o=[b[0],b[1],b[2],b[3]];
+  if(!S.drag){
+    const eh=edgeHit(x,y);
+    const k=eh?eh.k:hit(x,y);
+    if(k!==S.hover||!!eh!==!!S.hoverEdge){ S.hover=k; S.hoverEdge=!!eh; }
+    let cur='crosshair';
+    if(eh){
+      if((eh.l&&eh.t)||(eh.r&&eh.b)) cur='nwse-resize';
+      else if((eh.r&&eh.t)||(eh.l&&eh.b)) cur='nesw-resize';
+      else if(eh.l||eh.r) cur='ew-resize';
+      else cur='ns-resize';
+    } else if(k>=0) cur='move';
+    cv.style.cursor=cur;
+    return;
+  }
+  const d=S.drag;
   if(d.mode==='new'){
     S.boxes[S.sel]=[Math.min(d.x,x),Math.min(d.y,y),Math.abs(x-d.x),Math.abs(y-d.y)];
-  } else {
+  } else if(d.mode==='move'){
+    const o=d.box;
     S.boxes[S.sel]=[o[0]+(x-d.x),o[1]+(y-d.y),o[2],o[3]];
+  } else {                                   // resize：被拖的边跟着走，对边固定
+    const eh=d.eh;
+    let x1=eh.l?x:eh.x1, x2=eh.r?x:eh.x2, y1=eh.t?y:eh.y1, y2=eh.b?y:eh.y2;
+    if(x2<x1){ const s=x1; x1=x2; x2=s; }
+    if(y2<y1){ const s=y1; y1=y2; y2=s; }
+    S.boxes[S.sel]=[x1,y1,x2-x1,y2-y1];
   }
   draw();
 };
