@@ -43,8 +43,8 @@ python3 tools/eval_onnx.py --data data/mix_clean --imgsz 640 \
 
 ```bash
 # 把导出的模型拷进部署目录
-cp exports_clean/best_fp32.onnx ../sort-web/models/yolo/best.onnx      # 容器默认（OpenCV DNN）
-cp exports_clean/best_int8.onnx ../sort-web/models/yolo/best_int8.onnx # 可选（ONNX Runtime）
+cp exports_clean/best_fp32.onnx ../sort-web/models/detect/goods_yolov8n_640_fp32.onnx   # 容器默认（OpenCV DNN）
+cp exports_clean/best_int8.onnx ../sort-web/models/detect/goods_yolov8n_640_int8.onnx  # 可选（ONNX Runtime）
 # yolo 容器：ENGINE=opencv 用 FP32；ENGINE=ort 用 INT8
 ```
 
@@ -107,7 +107,7 @@ python3 tools/build_trt_engine.py --check --onnx exports_clean/best_fp32.onnx --
 python3 tools/build_trt_engine.py --onnx exports_clean/best_fp32.onnx \
     --calib-dir data/mix_clean/images/train --calib-n 200 --imgsz 640 --out engines --bench 20
 ```
-部署：`cp engines/*.engine ../sort-web/models/yolo/`，compose 里设 `ENGINE=trt`
+部署：`cp engines/*.engine ../sort-web/models/detect/`，compose 里设 `ENGINE=trt`
 （`server/yolo_server.py` 已支持 `ENGINE=trt`，用 pycuda + TensorRT runtime 执行）。
 
 ## 8. 域差异（sim-to-real gap）实测与修复 —— 第 1 项优化
@@ -224,8 +224,8 @@ bash tools/finish_v3_gpu.sh      # 真实域评估 → 导出量化 → ONNX 评
 
 ```bash
 # 已自动部署到 sort-web（供网关/容器加载）
-sort-web/models/yolo/best.onnx        12.27 MB  FP32
-sort-web/models/yolo/best_int8.onnx    3.36 MB  动态 INT8
+sort-web/models/detect/goods_yolov8n_640_fp32.onnx   12.27 MB  FP32
+sort-web/models/detect/goods_yolov8n_640_int8.onnx   3.36 MB  动态 INT8
 ```
 
 用 sort-web 自己的服务代码（`server/yolo_server.py`, ENGINE=opencv）加载新模型实测：
@@ -265,7 +265,7 @@ sort-web/models/yolo/best_int8.onnx    3.36 MB  动态 INT8
 
 ### 11.2 部署模型的置信度阈值（实测扫描）
 
-用**人工核验**的 val（50 张）扫描部署用 ONNX（`sort-web/models/yolo/best.onnx`）：
+用**人工核验**的 val（50 张）扫描部署用 ONNX（`sort-web/models/detect/goods_yolov8n_640_fp32.onnx`）：
 
 | conf | 精确率 P | 召回率 R | F1 |
 |---|---|---|---|
@@ -284,7 +284,7 @@ sort-web/models/yolo/best_int8.onnx    3.36 MB  动态 INT8
 runs/best_after_review.pt                      # 复核后权重（mAP50 0.9927）
 exports_v3gpu/best_fp32.onnx                   # 部署用 FP32（12.27 MB）
 exports_v3gpu/best_int8_dynamic.onnx           # 动态 INT8（3.36 MB）
-sort-web/models/yolo/{best.onnx,best_int8.onnx}  # 已部署
+sort-web/models/detect/goods_yolov8n_640_{fp32,int8}.onnx  # 已部署
 runs/eval_before_review.json / eval_after_review.json   # 两份同口径评估报告
 ```
 

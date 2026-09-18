@@ -32,7 +32,7 @@ echo "=== ONNX 精度/延迟对比 ==="
     --out exports_v3gpu/eval_report.json
 
 echo "=== 部署到 sort-web（供网关/容器加载）==="
-cp -f exports_v3gpu/best_fp32.onnx ../sort-web/models/yolo/best.onnx
-cp -f exports_v3gpu/best_int8_dynamic.onnx ../sort-web/models/yolo/best_int8.onnx
-ls -l ../sort-web/models/yolo/
+cp -f exports_v3gpu/best_fp32.onnx ../sort-web/models/detect/goods_yolov8n_640_fp32.onnx
+cp -f exports_v3gpu/best_int8_dynamic.onnx ../sort-web/models/detect/goods_yolov8n_640_int8.onnx
+ls -l ../sort-web/models/detect/
 echo "DONE"

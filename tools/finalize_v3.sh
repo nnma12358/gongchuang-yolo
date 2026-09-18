@@ -21,7 +21,7 @@ rm -rf exports_v3 && $PY tools/export_quantize.py --weights "$BEST" --data data/
 echo "[4/4] 精度对比 + 部署到 sort-web"
 $PY tools/eval_onnx.py --data data/mix_v3 --imgsz 640 \
     --models exports_v3/best_fp32.onnx exports_v3/best_int8_dynamic.onnx --out exports_v3/eval_report.json
-cp exports_v3/best_fp32.onnx ../sort-web/models/yolo/best.onnx
-cp exports_v3/best_int8_dynamic.onnx ../sort-web/models/yolo/best_int8.onnx
-echo "  已部署到 sort-web/models/yolo/"
+cp exports_v3/best_fp32.onnx ../sort-web/models/detect/goods_yolov8n_640_fp32.onnx
+cp exports_v3/best_int8_dynamic.onnx ../sort-web/models/detect/goods_yolov8n_640_int8.onnx
+echo "  已部署到 sort-web/models/detect/"
 echo "[完成]"

@@ -3,7 +3,7 @@
 #   1) 真实域微调（AdamW lr0 5e-4 / 40ep / patience 12）
 #   2) 真实域验证集评估（28 实拍 + 10 生成，唯一可信指标）
 #   3) 导出 ONNX(FP32) + 动态 INT8 量化 + 延迟基准
-#   4) ONNX 精度对比 → 部署到 sort-web/models/yolo/
+#   4) ONNX 精度对比 → 部署到 sort-web/models/detect/
 #
 # 用法: bash tools/retrain_v3_gpu.sh
 # 环境: PY=/home/xxxffyy/gpu_env/bin/python（CUDA 版 torch）
@@ -54,7 +54,7 @@ echo "=== ONNX 精度/延迟对比 ==="
     --out exports_v3gpu/eval_report.json
 
 echo "=== 部署到 sort-web（供网关/容器加载）==="
-cp -f exports_v3gpu/best_fp32.onnx ../sort-web/models/yolo/best.onnx
-cp -f exports_v3gpu/best_int8_dynamic.onnx ../sort-web/models/yolo/best_int8.onnx
-ls -l ../sort-web/models/yolo/
+cp -f exports_v3gpu/best_fp32.onnx ../sort-web/models/detect/goods_yolov8n_640_fp32.onnx
+cp -f exports_v3gpu/best_int8_dynamic.onnx ../sort-web/models/detect/goods_yolov8n_640_int8.onnx
+ls -l ../sort-web/models/detect/
 echo "DONE"

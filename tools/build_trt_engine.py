@@ -17,7 +17,7 @@ build_trt_engine.py —— TensorRT INT8/FP16 引擎构建（在 Jetson 上执�
       --out engines --bench 20
 
 产出：engines/best_int8.engine · engines/best_fp16.engine · engines/calib.cache
-部署：拷到 sort-web/models/yolo/ 并在 compose 里设 ENGINE=trt、MODEL_PATH=.../*.engine
+部署：拷到 sort-web/models/detect/ 并在 compose 里设 ENGINE=trt、MODEL_PATH=.../*.engine
 """
 import argparse
 import glob
@@ -251,7 +251,7 @@ def main():
     with open(os.path.join(args.out, "trt_report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     print("\n报告:", os.path.join(args.out, "trt_report.json"))
-    print("部署：cp {0}/*.engine ../sort-web/models/yolo/ 并在 compose 设 ENGINE=trt".format(args.out))
+    print("部署：cp {0}/*.engine ../sort-web/models/detect/ 并在 compose 设 ENGINE=trt".format(args.out))
 
 
 if __name__ == "__main__":
