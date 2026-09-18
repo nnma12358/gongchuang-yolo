@@ -96,9 +96,21 @@ python3 tools/run_attr_pipeline.sh                    # 生成→训练→导出
   · 形状=正四面体(0.78) 颜色=紫色(1.00) 表面=无
 ```
 
-## 7. TensorRT（Jetson 上的 INT8）
+## 7. TensorRT（Jetson 上的加速）
 
-`tools/build_trt_engine.py`：在 Jetson 上构建 **INT8（熵校准）+ FP16** 引擎，输出 `*.engine` 与 `calib.cache`。
+`tools/build_trt_engine.py`：在 Jetson 上构建 **FP16 / INT8（熵校准）** 引擎，输出 `*.engine` 与 `calib.cache`。
+
+⚠ **精度选择看芯片，不是越高压缩越好**：
+
+| 平台 | GPU | 建议 | 原因 |
+|---|---|---|---|
+| **Jetson Nano**（Tegra X1） | Maxwell **SM 5.3** | **FP16** | Maxwell 没有 INT8 张量核、也没有 DP4A 指令，TRT 的 INT8 只能用 FP16 模拟 → 基本不提速，还掉精度 |
+| Jetson TX2 | Pascal SM 6.2 | FP16（INT8 有小幅收益） | 有 DP4A |
+| Xavier NX / AGX | Volta SM 7.2 | INT8 | 有 INT8 张量核，比 FP16 再快 1.5~2× |
+| Orin | Ampere SM 8.7 | INT8 / FP16 | INT8 收益最大 |
+
+引擎与 **GPU 架构 + TensorRT 版本绑定**，必须在设备上构建（PC 上构建的拷过去加载会失败）。
+
 
 ```bash
 # PC 上先自检（无需 TensorRT）
@@ -218,7 +230,7 @@ bash tools/finish_v3_gpu.sh      # 真实域评估 → 导出量化 → ONNX 评
 ```
 
 所以 PC/容器侧用 **FP32**（35 ms/帧，1280²）或 **动态 INT8**（3.36 MB，精度还略高但慢 3 倍）；
-**Jetson 上用 TensorRT INT8**（`tools/build_trt_engine.py`）才是真正的加速路径。
+**Jetson Nano 上用 TensorRT FP16**（`sort-web/scripts/build-trt-on-jetson.sh`）才是真正的加速路径（Nano 无 INT8 硬件）。
 
 ### 10.5 部署与在线验证
 

@@ -4,7 +4,15 @@
 build_trt_engine.py —— TensorRT INT8/FP16 引擎构建（在 Jetson 上执行）
 =====================================================================
 为什么需要：ONNX Runtime 的静态 INT8 量化会把 YOLOv8 检测头压塌（实测分数全 0），
-但 TensorRT 的 INT8（带熵校准）对检测头处理正确，能在 Nano/Orin 上拿到 2~4× 加速。
+而 TensorRT 引擎对检测头处理正确，是 Jetson 上真正的加速路径。
+
+⚠ 精度怎么选（按芯片，不是越压缩越好）：
+  · **Jetson Nano / Tegra X1（Maxwell SM 5.3）：用 FP16** —— Maxwell 没有 INT8 张量核与 DP4A，
+    TRT 的 INT8 只能靠 FP16 模拟，基本不提速且掉精度；
+  · Jetson TX2（SM 6.2）：FP16 为主，INT8 小幅收益；
+  · Xavier(7.2) / Orin(8.7)：有 INT8 张量核，INT8 比 FP16 再快 1.5~2×。
+
+引擎与 GPU 架构 + TRT 版本绑定，**必须在设备上构建**。
 
 用法（Jetson，JetPack 4.6.1 / TensorRT 8.0 / Python 3.6）：
   # 自检（不需要 TensorRT，只校验 ONNX 与校准图片列表）
@@ -112,12 +120,18 @@ def build_engine(onnx_path, out_path, imgsz, calibrator=None, fp16=True, int8=Fa
             errs = [parser.get_error(i).desc() for i in range(parser.num_errors)]
             raise RuntimeError("ONNX 解析失败: {0}".format(errs[:3]))
     config = builder.create_builder_config()
-    config.max_workspace_size = 1 << 30                            # 1GB（Nano 8GB 内存充足）
+    # workspace：Nano 只有 4GB 共享内存，构建期给 512MB 足够且不易 OOM
+    ws = int(os.environ.get("TRT_WORKSPACE_MB", "512")) << 20
+    try:                                            # TRT 8.x 新 API
+        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, ws)
+    except Exception:
+        config.max_workspace_size = ws              # TRT 7.x 旧 API
     if fp16 and builder.platform_has_fast_fp16:
         config.set_flag(trt.BuilderFlag.FP16)
     if int8:
         if not builder.platform_has_fast_int8:
-            raise RuntimeError("该平台不支持 INT8")
+            # Maxwell(Jetson Nano, SM 5.3) 就是这一类：没有 INT8 硬件
+            raise RuntimeError("该平台无快速 INT8 硬件（如 Jetson Nano/Maxwell）→ 用 FP16")
         config.set_flag(trt.BuilderFlag.INT8)
         config.set_flag(trt.BuilderFlag.STRICT_TYPES) if False else None
         if calibrator is not None:
