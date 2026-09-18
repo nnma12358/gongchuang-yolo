@@ -86,6 +86,15 @@ YOLO_IMGSZ=640                # 必须与训练一致（本模型 640）
 YOLO_CONF=0.35                # 实测：0.35~0.55 误检均为 0/图
 YOLO_IOU=0.45
 
+# ---- Jetson 推理加速（三条路径，自动降级，不会崩）----
+# ① TensorRT FP16（最快）：先在设备上 bash scripts/build-trt-on-jetson.sh 构建引擎，
+#    再 bash scripts/gen-trt-override.sh 生成叠加文件，然后：
+#      docker compose -f docker-compose.jetson.yml -f docker-compose.jetson-trt.yml up -d sort-yolo
+#    ⚠ Jetson Nano 的 Maxwell GPU 没有 INT8 硬件 → 用 FP16，不要用 INT8
+# ② OpenCV CUDA FP16（零额外依赖，JetPack 自带 OpenCV 带 CUDA）：DNN_BACKEND=cuda
+# ③ OpenCV CPU（兜底）：DNN_BACKEND=cpu 或不设且无 CUDA
+DNN_BACKEND=auto              # auto | cuda | cpu
+
 # ---- 托盘 ROI（防人手/机械臂/杂物被当成货物）----
 # 留空=不启用。按标定好的托盘范围填，例如四周留 6% 边距：
 # ROI=0.06,0.06,0.94,0.94
@@ -174,6 +183,22 @@ curl -s http://localhost/health         # 网关 + 前端
 `detections` 里应出现 1 条、`conf` ≥ 0.8。若 `engine` 退化成 `classic`，
 说明 yolo/cnn 容器没起来，先看 `docker logs sort-yolo`。
 
+## 3.5 把推理跑到最优（Jetson Nano）
+
+Nano 的瓶颈几乎全在检测前向。三条路径**自动降级**，`/health` 的 `engine` 与 `dnn_backend` 会告诉你实际走哪条：
+
+| 路径 | 怎么做 | 预期 |
+|---|---|---|
+| ① **TensorRT FP16**（推荐） | `bash scripts/build-trt-on-jetson.sh` → `bash scripts/gen-trt-override.sh` → 用叠加文件启动 | 最快；比 OpenCV CPU 快约一个数量级 |
+| ② OpenCV CUDA FP16 | `.env` 里 `DNN_BACKEND=cuda` | 零额外依赖，JetPack 自带 OpenCV 带 CUDA |
+| ③ OpenCV CPU | 默认兜底 | 一定能跑，但最慢 |
+
+**为什么是 FP16 而不是 INT8**：Jetson Nano 是 Tegra X1（Maxwell，SM 5.3），**没有 INT8 张量核、
+也没有 DP4A 指令** —— TensorRT 的 INT8 在这块芯片上只能用 FP16 模拟，基本不提速还掉精度。
+只有 Xavier(SM 7.2)/Orin(SM 8.7) 才值得做 INT8。构建脚本会自动识别芯片并给建议。
+
+引擎与 GPU 架构 + TensorRT 版本绑定，**必须在 Jetson 本机构建**（PC 上构建的拷过去加载不了）。
+
 ## 4. 现场调优
 
 | 现象 | 改哪里 |
@@ -198,6 +223,8 @@ docker compose -f docker-compose.jetson.yml restart sort-yolo sort-vision
 docker-compose.jetson.yml         核心编排（网关/视觉/YOLO/CNN + ros profile）
 docker-compose.jetson-devices.yml 叠加：挂 /dev/video* 相机设备
 deploy/jetson/                    4 个 Dockerfile + requirements + ROS 桥/深度节点脚本
+scripts/build-trt-on-jetson.sh    ★ 在设备上构建 TensorRT FP16 引擎 + 实测 + 部署
+scripts/gen-trt-override.sh       ★ 按设备真实路径生成 TRT 运行时 compose 叠加文件
 server/                           gateway.py vision_server.py yolo_server.py cnn_server.py
                                   detect_core.py pose.py catalog.py …
 models/detect/goods_yolov8n_640_fp32.onnx   ✅ 检测模型（YOLOv8n 单类 goods）

@@ -70,10 +70,24 @@ CNN 判 **white 0.998 / dodecahedron 0.896 / clean 0.995**（与人工标注一�
 
 | 场景 | 用哪个 | 原因 |
 |---|---|---|
-| PC / x86 容器 | **FP32** + `CONF_THRES=0.35` | 30 ms/帧；动态 INT8 反而慢到 120 ms |
-| Jetson | **TensorRT INT8**（`工创yolo tools/build_trt_engine.py` 生成 `.engine`） | 真正提速路径 |
-| 存储受限 | 动态 INT8 | 3.36 MB，精度不降 |
+| PC / x86 容器 | **FP32 ONNX** + `CONF_THRES=0.35` | 30 ms/帧；动态 INT8 反而慢到 120 ms |
+| **Jetson Nano** | **TensorRT FP16 引擎**（`scripts/build-trt-on-jetson.sh` 在设备上构建） | Nano 的 Maxwell GPU **没有 INT8 硬件**，INT8 只能靠 FP16 模拟 → 不快且掉精度；**FP16 才是最优** |
+| Jetson Xavier / Orin | TensorRT INT8（有 INT8 张量核） | 比 FP16 再快 1.5~2× |
+| 进 TRT 之前的零依赖加速 | `DNN_BACKEND=cuda`（JetPack 自带 OpenCV 的 CUDA FP16 后端） | 不用装 pycuda/TensorRT 就能先用上 GPU |
+| 存储受限 | 动态 INT8 ONNX | 3.36 MB，精度不降 |
 | ~~ONNX Runtime 静态 INT8 (QDQ)~~ | **不要用** | 能加载但检测头输出全 0，已在导出脚本里拦截 |
+
+### 5.1 Jetson 上的三条推理路径（自动降级，不会崩）
+
+```
+① ENGINE=trt   + *.engine        TensorRT FP16     最快（需在设备上构建引擎 + 容器能访问 TRT）
+② ENGINE=opencv + DNN_BACKEND=cuda  OpenCV CUDA FP16 零额外依赖（JetPack 自带 OpenCV 带 CUDA）
+③ ENGINE=opencv （默认 auto）      OpenCV CPU        兜底，一定能跑
+```
+
+`/health` 的 `engine` 与 `dnn_backend` 字段会告诉你当前实际走的是哪条。
+构建与部署见 `scripts/build-trt-on-jetson.sh`（含平台识别与设备实测）与
+`scripts/gen-trt-override.sh`（按设备真实路径生成 compose 叠加文件）。
 
 ## 6. 现场误检的兜底：托盘 ROI
 

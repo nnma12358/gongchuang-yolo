@@ -44,6 +44,9 @@ IMGSZ = int(os.environ.get("IMGSZ", "640"))
 CONF_THRES = float(os.environ.get("CONF_THRES", "0.35"))
 IOU_THRES = float(os.environ.get("IOU_THRES", "0.45"))
 ENGINE = os.environ.get("ENGINE", "opencv").lower()
+# OpenCV DNN 后端：auto=有 CUDA 就用 GPU FP16（JetPack 自带 OpenCV 带 CUDA），否则 CPU
+#   cuda / cpu 可强制。Nano 上 CUDA FP16 通常比 CPU DNN 快 2~4 倍，且零额外依赖。
+DNN_BACKEND = os.environ.get("DNN_BACKEND", "auto").lower()
 PORT = int(os.environ.get("PORT", "8101"))
 
 STATE = {"engine": None, "model": None, "classes": ["goods"], "loaded_at": None,
@@ -133,9 +136,36 @@ def load_model():
         raise FileNotFoundError(
             "未找到检测模型 {0}；请把工创yolo 导出的 ONNX 放到 "
             "models/detect/goods_yolov8n_640_fp32.onnx".format(MODEL_PATH))
-    STATE.update({"engine": "opencv_dnn", "model": MODEL_PATH, "loaded_at": time.time(),
-                  "net": cv2.dnn.readNetFromONNX(MODEL_PATH)})
-    logger.info("已加载 ONNX（OpenCV DNN）: {0}（imgsz={1}, conf={2}）".format(MODEL_PATH, IMGSZ, CONF_THRES))
+    net = cv2.dnn.readNetFromONNX(MODEL_PATH)
+    backend = apply_dnn_backend(net)
+    STATE.update({"engine": "opencv_dnn", "backend": backend, "model": MODEL_PATH,
+                  "loaded_at": time.time(), "net": net})
+    logger.info("已加载 ONNX（OpenCV DNN）: {0}（imgsz={1}, conf={2}, 后端 {3}）".format(
+        MODEL_PATH, IMGSZ, CONF_THRES, backend))
+
+
+def apply_dnn_backend(net):
+    """选择 OpenCV DNN 后端：优先 Jetson 上的 CUDA FP16（零额外依赖），失败退回 CPU。
+
+    Jetson（JetPack）自带的 python3-opencv 是带 CUDA 编译的，
+    所以 Nano 上不用装 TensorRT/pycuda 也能先用上 GPU。
+    """
+    import cv2
+    if DNN_BACKEND == "cpu":
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        return "cpu"
+    try:
+        if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+            net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+            net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
+            return "cuda_fp16"
+    except Exception as e:                      # 未编译 CUDA 的 OpenCV 会在这里失败
+        if DNN_BACKEND == "cuda":
+            logger.warning("强制 CUDA 后端但不可用: %s", e)
+    net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+    net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+    return "cpu"
 
 
 def letterbox(bgr, size):
@@ -237,7 +267,8 @@ def main():
     @app.get("/health")
     def health():
         ready = STATE["engine"] is not None
-        return {"ok": ready, "engine": STATE["engine"], "model": STATE["name"],
+        return {"ok": ready, "engine": STATE["engine"], "dnn_backend": STATE.get("backend"),
+                "model": STATE["name"],
                 "classes": STATE["classes"], "imgsz": IMGSZ, "conf_thres": CONF_THRES,
                 "last_ms": STATE["last_ms"], "calls": STATE["calls"],
                 "model_info": STATE["info"],        # 来自 models/MANIFEST.json：指标/精度/训练数据
