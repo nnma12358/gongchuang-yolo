@@ -37,7 +37,7 @@ echo "=== [1/5] 检查构建必需内容 ==="
 if ! grep -q 'adapter-static\|_app' build/index.html && [ ! -d build/_app ]; then
   echo "❌ build/ 看起来不是静态 SPA 产物（缺 _app/）"; exit 1
 fi
-for f in models/yolo/best.onnx models/yolo/classes.json \
+for f in models/detect/goods_yolov8n_640_fp32.onnx models/detect/classes.json \
          models/attr/color.onnx models/attr/color_classes.json \
          models/attr/shape.onnx models/attr/shape_classes.json \
          models/attr/stain.onnx models/attr/stain_classes.json; do
@@ -46,7 +46,7 @@ done
 echo "  ✅ 前端静态产物 + 8 个模型文件就位"
 
 STAGE="$OUTDIR/sort-jetson-deploy-$VERSION"
-rm -rf "$STAGE"; mkdir -p "$STAGE"/{deploy/jetson,server,scripts,models/yolo,models/attr,calibration,.ros2_ws,src,static}
+rm -rf "$STAGE"; mkdir -p "$STAGE"/{deploy/jetson,server,scripts,models/detect,models/attr,calibration,.ros2_ws,src,static}
 
 echo "=== [2/5] 拷贝部署包 ==="
 cp -a docker-compose.jetson.yml docker-compose.jetson-devices.yml "$STAGE"/
@@ -188,7 +188,7 @@ curl -s http://localhost/health         # 网关 + 前端
 `models/` 是只读挂载进容器的，替换文件后重启对应容器即可：
 
 ```bash
-cp 新的best.onnx models/yolo/best.onnx
+cp 新的 ONNX models/detect/goods_yolov8n_640_fp32.onnx
 docker compose -f docker-compose.jetson.yml restart sort-yolo sort-vision
 ```
 
@@ -200,7 +200,8 @@ docker-compose.jetson-devices.yml 叠加：挂 /dev/video* 相机设备
 deploy/jetson/                    4 个 Dockerfile + requirements + ROS 桥/深度节点脚本
 server/                           gateway.py vision_server.py yolo_server.py cnn_server.py
                                   detect_core.py pose.py catalog.py …
-models/                           ✅ 已含实训练模型（yolo/best.onnx 等 8 个文件）
+models/detect/goods_yolov8n_640_fp32.onnx   ✅ 检测模型（YOLOv8n 单类 goods）
+models/attr/{color,shape,stain}.onnx        ✅ 属性 CNN（颜色/形状/表面）
 build/                            ✅ 前端静态产物（网关容器 COPY 进镜像）
 src/ static/ package*.json        前端源码（现场要改页面时：ADAPTER=static npm run build:static）
 calibration/                      2.5D 定位标定产物放这里（table_reference.npz）
@@ -228,7 +229,7 @@ echo "=== [4/5] 生成清单与校验和 ==="
   echo "大小:   $(du -sh "$STAGE" | cut -f1)"
   echo
   echo "模型文件:"
-  ( cd "$STAGE" && md5sum models/yolo/best.onnx models/yolo/best_int8.onnx models/attr/*.onnx )
+  ( cd "$STAGE" && md5sum models/detect/*.onnx models/attr/*.onnx )
   echo
   echo "目录树(2 层):"
   ( cd "$STAGE" && find . -maxdepth 2 -type d | sort )

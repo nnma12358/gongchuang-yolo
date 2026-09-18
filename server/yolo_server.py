@@ -18,8 +18,8 @@ yolo_server.py —— 目标检测容器（YOLO / ONNX）
   GET  /model        模型信息（路径、类别、输入尺寸）
 
 环境变量：
-  MODEL_PATH   默认 /app/models/yolo/best.onnx
-  CLASSES_JSON 类别名文件（可选，如 /app/models/yolo/classes.json）
+  MODEL_PATH   默认 /app/models/detect/goods_yolov8n_640_fp32.onnx
+  CLASSES_JSON 类别名文件（可选，如 /app/models/detect/classes.json）
   IMGSZ        推理输入尺寸，默认 640（与训练一致；小目标可用 960）
   CONF_THRES   置信度阈值，默认 0.35
                （加入 223 张背景负样本重训后的实测：0.25→误检0.06/图·漏检0.03/图，
@@ -38,7 +38,7 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("yolo")
 
-MODEL_PATH = os.environ.get("MODEL_PATH", "/app/models/yolo/best.onnx")
+MODEL_PATH = os.environ.get("MODEL_PATH", "/app/models/detect/goods_yolov8n_640_fp32.onnx")
 CLASSES_JSON = os.environ.get("CLASSES_JSON", "")
 IMGSZ = int(os.environ.get("IMGSZ", "640"))
 CONF_THRES = float(os.environ.get("CONF_THRES", "0.35"))
@@ -47,8 +47,31 @@ ENGINE = os.environ.get("ENGINE", "opencv").lower()
 PORT = int(os.environ.get("PORT", "8101"))
 
 STATE = {"engine": None, "model": None, "classes": ["goods"], "loaded_at": None,
-         "last_ms": None, "calls": 0, "name": os.path.basename(MODEL_PATH)}
+         "last_ms": None, "calls": 0, "name": os.path.basename(MODEL_PATH),
+         "info": {}}
 _ORT = {"session": None}
+
+
+def load_manifest():
+    """读 models/MANIFEST.json（模型登记表）：返回当前模型文件的指标/说明，便于现场核对。"""
+    for cand in (os.path.join(os.path.dirname(MODEL_PATH), "..", "MANIFEST.json"),
+                 "/app/models/MANIFEST.json"):
+        cand = os.path.abspath(cand)
+        if not os.path.exists(cand):
+            continue
+        try:
+            man = json.load(open(cand, encoding="utf-8"))
+            base = os.path.basename(MODEL_PATH)
+            for v in (man.get("detector", {}) or {}).get("variants", []):
+                if os.path.basename(v.get("file", "")) == base:
+                    return {"manifest": cand, "md5_prefix": (v.get("md5") or "")[:12],
+                            "precision": v.get("precision"), "arch": man["detector"].get("arch"),
+                            "metrics": man["detector"].get("metrics"),
+                            "metrics_false_positive": man["detector"].get("metrics_false_positive"),
+                            "trained_on": man["detector"].get("trained_on")}
+        except Exception as e:
+            logger.warning("MANIFEST.json 读取失败: %s", e)
+    return {}
 
 
 def load_classes():
@@ -108,7 +131,8 @@ def load_model():
     import cv2
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
-            "未找到检测模型 {0}；请把工创yolo 导出的 best.onnx 放到 models/yolo/best.onnx".format(MODEL_PATH))
+            "未找到检测模型 {0}；请把工创yolo 导出的 ONNX 放到 "
+            "models/detect/goods_yolov8n_640_fp32.onnx".format(MODEL_PATH))
     STATE.update({"engine": "opencv_dnn", "model": MODEL_PATH, "loaded_at": time.time(),
                   "net": cv2.dnn.readNetFromONNX(MODEL_PATH)})
     logger.info("已加载 ONNX（OpenCV DNN）: {0}（imgsz={1}, conf={2}）".format(MODEL_PATH, IMGSZ, CONF_THRES))
@@ -202,6 +226,7 @@ def main():
     import uvicorn
 
     STATE["classes"] = load_classes()
+    STATE["info"] = load_manifest()
     try:
         load_model()
     except Exception as e:
@@ -215,6 +240,7 @@ def main():
         return {"ok": ready, "engine": STATE["engine"], "model": STATE["name"],
                 "classes": STATE["classes"], "imgsz": IMGSZ, "conf_thres": CONF_THRES,
                 "last_ms": STATE["last_ms"], "calls": STATE["calls"],
+                "model_info": STATE["info"],        # 来自 models/MANIFEST.json：指标/精度/训练数据
                 "error": None if ready else "模型未加载（检查 MODEL_PATH）"}
 
     @app.get("/model")

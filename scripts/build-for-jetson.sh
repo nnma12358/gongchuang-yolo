@@ -42,7 +42,10 @@ echo "========================================="
 # ---------- [0/3] 预检 ----------
 echo "[0/3] 预检…"
 [ -f package.json ] || { echo "❌ 请在 sort-web 项目根目录执行"; exit 1; }
-[ -f models/yolov8n.onnx ] || echo "  ⚠ models/yolov8n.onnx 不存在（DETECT_ENGINE=onnx 时必需，classic 引擎可忽略）"
+for m in models/detect/goods_yolov8n_640_fp32.onnx models/attr/color.onnx \
+         models/attr/shape.onnx models/attr/stain.onnx; do
+  [ -f "$m" ] || echo "  ⚠ 缺模型 $m（DETECT_ENGINE=yolo 时必需）"
+done
 if [ "$WITH_IMAGE" = "1" ]; then
   command -v docker >/dev/null || { echo "❌ 未找到 docker"; exit 1; }
   docker buildx version >/dev/null 2>&1 || { echo "❌ 未启用 docker buildx（Docker Desktop 默认启用）"; exit 1; }

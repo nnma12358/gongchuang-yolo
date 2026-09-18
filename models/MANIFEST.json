@@ -1,0 +1,176 @@
+{
+  "schema": 1,
+  "note": "本文件由 scripts/gen_model_manifest.py 生成；换模型后请重新生成",
+  "detector": {
+    "task": "目标检测（找出货物在哪里，只判是不是货物）",
+    "arch": "YOLOv8n",
+    "classes": {
+      "0": "goods"
+    },
+    "variants": [
+      {
+        "file": "detect/goods_yolov8n_640_fp32.onnx",
+        "precision": "fp32",
+        "size_mb": 12.27,
+        "md5": "4d938c41dd40c49e19c771e51454aad5",
+        "input": [
+          [
+            1,
+            3,
+            640,
+            640
+          ]
+        ],
+        "output": [
+          [
+            1,
+            5,
+            8400
+          ]
+        ],
+        "recommended": true
+      },
+      {
+        "file": "detect/goods_yolov8n_640_int8.onnx",
+        "precision": "int8(动态量化)",
+        "size_mb": 3.36,
+        "md5": "a1a93be00e81a6234f9ab513a3aba2da",
+        "input": [
+          [
+            1,
+            3,
+            640,
+            640
+          ]
+        ],
+        "output": [
+          [
+            1,
+            5,
+            8400
+          ]
+        ],
+        "recommended": false
+      }
+    ],
+    "metrics": {
+      "mAP50": 0.995,
+      "mAP50_95": 0.76168,
+      "P": 1.0,
+      "R": 0.99492,
+      "val": "40 实拍（全部人工核验）+ 10 生成 + 15 背景，分组切分、无跨集泄漏"
+    },
+    "metrics_false_positive": {
+      "conf": 0.55,
+      "fp_per_image": 0.0,
+      "miss_per_image": 0.028,
+      "note": "conf≥0.35 时误检 0 个/图（详见 工创yolo/docs_TRAINING.md §12）"
+    },
+    "trained_on": "193 张实拍人工复核标注 + 50 张合成 + 99 张背景负样本；AdamW lr0 5e-4 / 40ep；分组切分无泄漏"
+  },
+  "attributes": [
+    {
+      "task": "color",
+      "task_cn": "颜色分类（红/橙/黄/绿/青/蓝/紫/黑/白）",
+      "file": "attr/color.onnx",
+      "arch": "TinyNet(4 conv)",
+      "size_mb": 4.42,
+      "md5": "f7c1523af127c108e02e937587410d5d",
+      "input": [
+        [
+          "batch",
+          3,
+          96,
+          96
+        ]
+      ],
+      "output": [
+        [
+          "batch",
+          9
+        ]
+      ],
+      "n_classes": 9,
+      "classes": {
+        "0": "red",
+        "1": "orange",
+        "2": "yellow",
+        "3": "green",
+        "4": "cyan",
+        "5": "blue",
+        "6": "purple",
+        "7": "black",
+        "8": "white"
+      },
+      "runs_in": "sort-cnn 容器 :8102"
+    },
+    {
+      "task": "shape",
+      "task_cn": "形状分类（正方体/长方体/圆柱/球/四面体/五棱柱/六棱柱/正十二面体/圆锥）",
+      "file": "attr/shape.onnx",
+      "arch": "TinyNet(4 conv)",
+      "size_mb": 4.42,
+      "md5": "fd07e361528de3178a68a6d90b1a9218",
+      "input": [
+        [
+          "batch",
+          3,
+          96,
+          96
+        ]
+      ],
+      "output": [
+        [
+          "batch",
+          9
+        ]
+      ],
+      "n_classes": 9,
+      "classes": {
+        "0": "cube",
+        "1": "cuboid",
+        "2": "cylinder",
+        "3": "ball",
+        "4": "tetra",
+        "5": "prism5",
+        "6": "prism6",
+        "7": "dodecahedron",
+        "8": "cone"
+      },
+      "runs_in": "sort-cnn 容器 :8102"
+    },
+    {
+      "task": "stain",
+      "task_cn": "表面状态（干净/污渍/缺陷）",
+      "file": "attr/stain.onnx",
+      "arch": "TinyNet(4 conv)",
+      "size_mb": 4.42,
+      "md5": "6d273f22cd7b0f114d9b43b5ac7db366",
+      "input": [
+        [
+          "batch",
+          3,
+          96,
+          96
+        ]
+      ],
+      "output": [
+        [
+          "batch",
+          3
+        ]
+      ],
+      "n_classes": 3,
+      "classes": {
+        "0": "clean",
+        "1": "stain",
+        "2": "defect"
+      },
+      "runs_in": "sort-cnn 容器 :8102"
+    }
+  ],
+  "where": {
+    "detector": "sort-yolo 容器 :8101（被 sort-vision :8100 调用）",
+    "attributes": "sort-cnn 容器 :8102（被 sort-vision :8100 调用）"
+  }
+}

@@ -43,7 +43,7 @@ CAMERA_URL = os.environ.get("CAMERA_URL", "")
 CAMERA_IMAGE = os.environ.get("CAMERA_IMAGE", "")     # CAMERA_SOURCE=image 时的回放图片路径
 CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH", "1280"))
 CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "720"))
-MODEL_PATH = os.environ.get("MODEL_PATH", "/app/models/yolov8n.onnx")
+MODEL_PATH = os.environ.get("MODEL_PATH", "/app/models/detect/goods_yolov8n_640_fp32.onnx")
 # 深度来源（Astra 深度快照，如 ROS2 监控页 http://127.0.0.1:8088/depth.png，uint16 PNG）；
 # 留空则仅用 RGB（抓取解算走平面单应路径）
 DEPTH_URL = os.environ.get("DEPTH_URL", "")

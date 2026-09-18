@@ -37,8 +37,8 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PORT=8101
-      - MODEL_PATH=/app/models/yolo/best.onnx
-      - CLASSES_JSON=/app/models/yolo/classes.json
+      - MODEL_PATH=/app/models/detect/goods_yolov8n_640_fp32.onnx
+      - CLASSES_JSON=/app/models/detect/classes.json
       - IMGSZ=${YOLO_IMGSZ:-640}          # 必须与训练 imgsz 一致（本模型 640；
                                           #   现场确实漏小目标时再试 960，但那是未验证配置）
       - CONF_THRES=${YOLO_CONF:-0.35}
@@ -110,7 +110,7 @@ services:
       - DETECT_ENGINE=${DETECT_ENGINE:-yolo}
       - YOLO_URL=http://127.0.0.1:8101
       - CNN_URL=http://127.0.0.1:8102
-      - MODEL_PATH=${MODEL_PATH:-/app/models/yolo/best.onnx}
+      - MODEL_PATH=${MODEL_PATH:-/app/models/detect/goods_yolov8n_640_fp32.onnx}
       - VISION_FPS=${VISION_FPS:-10}
       - CONF_MIN=${CONF_MIN:-0.45}
       # 托盘 ROI（归一化）：矩形 "x1,y1,x2,y2" 或多边形 "x1,y1;x2,y2;..."；
@@ -163,7 +163,7 @@ services:
       - AUTO_SINGLE_ITEM=${AUTO_SINGLE_ITEM:-1}   # 一次一件（赛项）
       - AUTO_DRY_RUN=${AUTO_DRY_RUN:-1}           # 1=不实际驱动机械臂（联调）
       - DETECT_ENGINE=${DETECT_ENGINE:-classic}
-      - MODEL_PATH=${MODEL_PATH:-/app/models/yolo/best.onnx}
+      - MODEL_PATH=${MODEL_PATH:-/app/models/detect/goods_yolov8n_640_fp32.onnx}
     volumes:
       - sort-gateway-data:/app/data
     depends_on:
