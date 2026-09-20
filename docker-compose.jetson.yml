@@ -127,6 +127,8 @@ services:
       - DETECT_ENGINE=${DETECT_ENGINE:-yolo}
       - YOLO_URL=http://127.0.0.1:8101
       - CNN_URL=http://127.0.0.1:8102
+      # 中文货物名要靠 CJK 字体渲染（镜像里没有，挂宿主机的 Noto CJK 进来）
+      - FONT_CJK=/opt/fonts/NotoSerifCJK-Bold.ttc
       - MODEL_PATH=${MODEL_PATH:-/app/models/detect/goods_yolov8n_640_fp32.onnx}
       - VISION_FPS=${VISION_FPS:-10}
       - CONF_MIN=${CONF_MIN:-0.45}
@@ -148,6 +150,8 @@ services:
     volumes:
       # 2.5D 定位软件的标定产物（table_reference.npz 等）只读挂载
       - ${CALIBRATION_DIR:-./calibration}:/app/calibration:ro
+      # 中文字体（宿主机 JetPack 自带 Noto CJK）
+      - /usr/share/fonts/opentype/noto:/opt/fonts:ro
     deploy:
       resources:
         limits:

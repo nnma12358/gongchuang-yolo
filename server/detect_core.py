@@ -336,12 +336,65 @@ def _table_ref_depth(u, v, table_ref, radius=3):
     return float(np.median(vals)) if vals.size else None
 
 
+def _cjk_font(size):
+    """找一个能渲染中文的字体（现场镜像默认没有；宿主机有 Noto CJK，挂进来即可）。
+
+    没有 CJK 字体时 cv2.putText 会把中文画成 "??????"，所以这里用 PIL 渲染。
+    """
+    candidates = [os.environ.get("FONT_CJK"), "/opt/fonts/NotoSansCJK.ttc",
+                  "/opt/fonts/NotoSerifCJK-Bold.ttc",
+                  "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                  "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"]
+    try:
+        from PIL import ImageFont
+    except ImportError:
+        return None
+    for c in candidates:
+        if c and os.path.exists(c):
+            try:
+                return ImageFont.truetype(c, size)
+            except Exception:
+                continue
+    return None
+
+
+def _draw_text(bgr, text, org, scale=1.0, color=(255, 255, 255), bg=None):
+    """画一行文字：有 CJK 字体走 PIL（支持中文），否则退回 cv2.putText（仅 ASCII）"""
+    import cv2
+    size = int(round(22 * scale))
+    font = _cjk_font(size)
+    if font is None:
+        cv2.putText(bgr, text.encode("ascii", "replace").decode(), org,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7 * scale, color, 2)
+        return bgr, (len(text) * 12, 22)
+    from PIL import Image, ImageDraw
+    import numpy as np          # 本模块原本在函数内局部 import，这里同样处理
+    img = Image.fromarray(bgr[:, :, ::-1])
+    dr = ImageDraw.Draw(img)
+    x, y = org[0], max(0, org[1] - size)
+    # Pillow 8+ 用 textbbox，Pillow 5~7（bionic 自带的是 5.1）只有 textsize
+    try:
+        b = dr.textbbox((x, y), text, font=font)
+        bx1, by1, bx2, by2 = b[0], b[1], b[2], b[3]
+    except AttributeError:
+        w, h = dr.textsize(text, font=font)
+        bx1, by1, bx2, by2 = x, y, x + w, y + h
+    if bg is not None:
+        dr.rectangle([bx1 - 4, by1 - 2, bx2 + 4, by2 + 3], fill=bg[::-1])
+    dr.text((x, y), text, font=font, fill=color[::-1])
+    return np.array(img)[:, :, ::-1].copy(), (bx2 - bx1, by2 - by1)
+
+
 def draw_marks(bgr, detections, hud=None, thickness=None):
-    """把标记画到画面上（输出带标记的图像；hud 为右上角信息行）"""
+    """把标记画到画面上（输出带标记的图像；hud 为左上角信息行）
+
+    中文货物名用 PIL 渲染（cv2.putText 不支持中文，会变成 ??????）。
+    """
     import cv2
     out = bgr.copy()
     h, w = out.shape[:2]
     th = thickness or max(2, int(w / 420))
+    scale = max(0.6, w / 1400.0)
     for d in detections:
         x1, y1, x2, y2 = d["box"]
         picked = (d.get("marks") or ["无"])[0]
@@ -350,15 +403,11 @@ def draw_marks(bgr, detections, hud=None, thickness=None):
         label = "{0} {1}%".format(d["name"], int(d["conf"] * 100))
         if picked != "无":
             label += " [{0}]".format(picked)
-        fs = max(0.5, w / 1400.0)
-        (tw, tht), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, fs, 2)
-        cv2.rectangle(out, (x1, max(0, y1 - tht - 10)), (x1 + tw + 10, y1), color, -1)
-        cv2.putText(out, label, (x1 + 5, max(tht + 4, y1 - 6)),
-                    cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255), 2)
+        out, (tw, tht) = _draw_text(out, label, (x1 + 5, max(24, y1 - 6)), scale,
+                                    color=(255, 255, 255), bg=color)
     if hud:
         for i, line in enumerate(hud):
-            cv2.putText(out, line, (10, 26 + i * 26), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7, (0, 90, 200), 2)
+            out, _ = _draw_text(out, line, (10, 30 + i * 28), scale * 0.85, color=(0, 90, 200))
     return out
 
 
