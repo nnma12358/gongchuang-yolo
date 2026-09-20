@@ -184,6 +184,7 @@ bash scripts/preflight-jetson.sh
 |---|---|---|
 | `lookup nvcr.io on 127.0.1.1:53: connection refused` | 宿主 DNS 解析器（systemd-resolved）没工作 | `sudo systemctl restart systemd-resolved`，或把 `/etc/resolv.conf` 写成 `nameserver 223.5.5.5` |
 | 拉基镜像超时 / `Get https://nvcr.io/v2/: ...` | nvcr.io 国内不可达 | `.env` 里 `BASE_IMAGE=docker.m.daocloud.io/nvcr.io/nvidia/l4t-base:r32.7.1` |
+| `docker start <容器>` 报 **`Unknown runtime specified nvidia`** | 现场容器是用 `--runtime nvidia` 创建的，但 `/etc/docker/daemon.json` 里**没有注册 nvidia runtime**（改 daemon.json 时把 `runtimes` 段覆盖掉了） | daemon.json 里补回 `"runtimes": {"nvidia": {"path": "/usr/bin/nvidia-container-runtime", "runtimeArgs": []}}` 再 `sudo systemctl restart docker`；`bash scripts/preflight-jetson.sh` 会提前查出这个问题 |
 
 给 Docker 配镜像加速与 DNS（一次配好，之后所有镜像都受益）：
 

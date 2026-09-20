@@ -67,6 +67,22 @@ else
   echo "    $WARN 没有 /etc/docker/daemon.json（未配镜像加速与 DNS）"
 fi
 echo "    当前生效的 registry-mirrors: $(docker info --format '{{json .RegistryConfig.Mirrors}}' 2>/dev/null || echo '（读不到）')"
+# ⚠ 关键：nvidia runtime 是否已注册 —— 现场用 --runtime nvidia 创建的容器（如 ROS2 容器）
+#    在缺少注册时会直接报 "Unknown runtime specified nvidia" 起不来。
+HAS_NVR="$(command -v nvidia-container-runtime || true)"
+REG_NVR="$(docker info --format '{{range .Runtimes}}{{.}} {{end}}' 2>/dev/null | grep -c nvidia || true)"
+if [ -n "$HAS_NVR" ] && [ "${REG_NVR:-0}" = "0" ]; then
+  echo "    $NO 宿主机装了 nvidia-container-runtime，但 daemon.json 里**没注册 nvidia runtime**"
+  echo "       → 用 --runtime nvidia 创建的容器（现场 ROS2 容器）会报 Unknown runtime specified nvidia"
+  FAIL=1
+elif [ "${REG_NVR:-0}" != "0" ]; then
+  echo "    $OK 已注册 nvidia runtime"
+fi
+# 现场有哪些容器依赖 nvidia runtime
+for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null); do
+  rt="$(docker inspect "$c" --format '{{.HostConfig.Runtime}}' 2>/dev/null)"
+  [ "$rt" = "nvidia" ] && echo "    ⚠ 容器 $c 依赖 nvidia runtime（$([ "${REG_NVR:-0}" != "0" ] && echo 可启动 || echo 现在起不来)）"
+done
 
 # ---------------- 4) 磁盘 ----------------
 echo
@@ -95,10 +111,19 @@ cat <<'FIX'
   # 验证
   python3 -c "import socket;print(socket.gethostbyname('nvcr.io'))"
 
-【Docker 守护进程修法】（镜像加速 + 给容器配 DNS，一次配好）
-  sudo mkdir -p /etc/docker
+【Docker 守护进程修法】（镜像加速 + DNS + **保留 nvidia runtime**）
+  ⚠ 千万不要直接覆盖 daemon.json：现场 ROS2 容器是用 --runtime nvidia 创建的，
+    一旦把 runtimes 段删掉，`docker start ros2_arm_container` 会报
+    "Unknown runtime specified nvidia" 而起不来（这个坑已经踩过一次）。
+
+  # 先备份
+  sudo cp /etc/docker/daemon.json /etc/docker/daemon.json.bak.$(date +%s) 2>/dev/null
+  # 再写入完整配置（含 runtimes —— 宿主机有 nvidia-container-runtime 就必须保留）
   sudo tee /etc/docker/daemon.json >/dev/null <<'JSON'
 {
+  "runtimes": {
+    "nvidia": { "path": "/usr/bin/nvidia-container-runtime", "runtimeArgs": [] }
+  },
   "dns": ["223.5.5.5", "114.114.114.114"],
   "registry-mirrors": [
     "https://docker.m.daocloud.io",
@@ -110,7 +135,9 @@ cat <<'FIX'
 }
 JSON
   sudo systemctl restart docker
-  docker info | grep -A3 "Registry Mirrors"
+  docker info | grep -E "Runtimes|Registry Mirrors" -A3
+  # 验证现场容器能起来
+  docker start ros2_arm_container && docker ps | grep ros2_arm
 
 【基镜像 nvcr.io 不可达的修法】（不用改代码，改 .env 一行）
   # 在 .env 里换成代理前缀（DaoCloud 支持 nvcr.io 代理）
