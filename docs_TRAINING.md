@@ -444,3 +444,78 @@ TRT 的 INT8 只能靠 FP16 模拟 —— 基本不提速还掉精度。INT8 留
 
 即：**给现场 ROS2/机械臂容器始终留出 ≥1.5GB 内存与 CPU 余量**，且不改动 docker 守护进程
 （不重启 docker，不碰现场容器）。
+
+---
+
+## 14. 与现场 ROS 2 栈集成（实测打通）
+
+### 14.1 现场实际运行方式（从 `.bash_history` 与源码确认）
+
+现场机器人的 ROS 2 栈跑在**他们自己的容器** `ros2_arm_container`（镜像 `wheeltec_ros2_astra:foxy`）里，
+启动命令是手工 `docker exec` 进去拉起，关键环境：
+
+```bash
+ROS_DOMAIN_ID=95            # 他们导出在 shell 里，不在容器 env
+ROS_LOCALHOST_ONLY=1        # 只走 loopback
+RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+python3 -u .../smart_sorting_dry_run --config .../dry_run_config.json   # 他们自己的感知（DRY_RUN）
+```
+
+### 14.2 机械臂的真实接口（从源码确认，不是猜的）
+
+`wheeltec_arm_driver/src/driver_node.cpp:78`：
+
+```cpp
+create_subscription<sensor_msgs::msg::JointState>("arm_joint_command", 100, &WheeltecArmDriver::joint_state_callback, this);
+```
+
+| 项 | 值 |
+|---|---|
+| 命令话题 | **`arm_joint_command`** |
+| 消息类型 | **`sensor_msgs/msg/JointState`**（`name` = joint1..joint6，`position` = 弧度） |
+| 其它订阅 | `arm_teleop`、`cmd_vel`、`joint_states`、`color_result`、`face_ik_result`、`gesture_arm`、`voice_joint_states` |
+| 发布 | `joint_states`、`odom`、`pose`、`imu`、`PowerVoltage` |
+| 自定义消息 | `wheeltec_arm_interfaces`：`ArmTarget`、`ArmTargetPosition`、`PickAndPut`、`ColorIkResult` … |
+| 相机话题 | `/camera/color/image_raw`、`/camera/depth/image_raw`、`/camera/color/camera_info` |
+
+桥接容器因此改成：**默认发布 `arm_joint_command` 的 `JointState`**（`ARM_TOPIC`/`ARM_MSG` 可配），
+请求里带 `joints=[j1..j6]` 才下发；只给笛卡尔目标时会**明确拒绝并提示需要逆解**（避免"以为动了其实没动"）。
+
+### 14.3 三个容器共存的对齐要点（都踩过）
+
+| 对齐项 | 值 | 不对齐的后果 |
+|---|---|---|
+| `ROS_DOMAIN_ID` | **95** | `ros2 topic list` 空空如也，互相发现不了 |
+| `RMW_IMPLEMENTATION` | `rmw_cyclonedds_cpp` | 不同 DDS 实现之间完全不可见 |
+| `ROS_LOCALHOST_ONLY` | `1` | 与现场不一致时发现行为不同（都用 host 网络时靠 lo 单播） |
+| 网络模式 | `host` | 非 host 时 loopback 单播发现失败 |
+| **`runtime: nvidia`** | 桥接容器需要 | 现场镜像里的 OpenCV 是 CUDA 版，缺 libcublas 直接 import 失败 |
+| daemon.json | 必须注册 `runtimes.nvidia` | 现场容器报 `Unknown runtime specified nvidia` 起不来 |
+
+### 14.4 联调实测
+
+```
+# 1) 我们的桥接容器与他们的容器在同一 DDS 域：发布 6 条，收到 6 条 ✓
+[收到] hello-from-sort-gateway-0 … -5            共收到 6 条
+
+# 2) 网关 → 桥接 → 机械臂话题（HTTP POST /execute 带 joints）
+POST /execute {"joints":[0.10,-0.45,0.60,0.20,0.00,1.20], "joint_names":["joint1".."joint6"]}
+→ 他们的容器收到：
+  [收到关节指令] names=['joint1','joint2','joint3','joint4','joint5','joint6']
+                positions=[0.1, -0.45, 0.6, 0.2, 0.0, 1.2]  ✓
+```
+
+### 14.5 还差的一步（不在我们这侧）
+
+现场 `dry_run_config.json` 的 `calibration_status = MISSING_FINAL_CALIBRATION`、
+`motion_authorized = false` —— **手眼标定与逆解还没完成**。要让整条链闭环还缺：
+
+1. **逆解**：我们有笛卡尔抓取点（`pose.py` 的 `grasp_from_detection`），现场用 MoveIt 2
+   (`mini_mec_six_arm_moveit_config`) 或 `ColorIkResult` 做 IK → 得到 6 个关节角；
+2. **手眼标定**：`~/ros2_ws/passive_handeye_calibration` 是他们现成的标定工程；
+3. 拿到关节角后 POST 给桥接（或让网关自动调用 IK）：
+
+```bash
+curl -X POST http://127.0.0.1:8120/execute -H 'Content-Type: application/json' \
+  -d '{"seq":1,"name":"白色正十二面体","bin":3,"joints":[j1,j2,j3,j4,j5,j6]}'
+```
