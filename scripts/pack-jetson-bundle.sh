@@ -377,12 +377,9 @@ for f in glob.glob(os.path.join(root, "deploy/jetson/Dockerfile*")):
     if "apt-get install" in t and "DEBIAN_FRONTEND" not in t:
         bad.append("%s 有 apt-get install 但没有 DEBIAN_FRONTEND（构建会卡在 tzdata 交互提示）"
                    % os.path.basename(f))
-# ④ bionic 的 apt python3-opencv 是 3.2，不支持 ONNX → 必须另外用 pip 装新版
-for f in glob.glob(os.path.join(root, "deploy/jetson/Dockerfile*")):
-    t = open(f, encoding="utf-8").read()
-    if "python3-opencv" in t and "opencv-python-headless" not in t:
-        bad.append("%s 用了 apt 的 python3-opencv(3.2, 不支持 ONNX) 却没装 pip 版 opencv-python-headless"
-                   % os.path.basename(f))
+# ④ 已废弃：早期方案想用 pip 版 opencv 替代 apt 的 3.2，但 pip 的 aarch64 轮子
+#    在 Tegra X1 上 SIGILL。最终方案是 apt 的 OpenCV 3.2 只做图像编解码，ONNX 推理交 ORT
+#    （由下面的 ⑥ 号规则检查，这里不再重复判定）。
 # ⑤ requirements 里不能有非 ASCII：容器 locale 是 POSIX/ASCII 时 pip 读文件直接 UnicodeDecodeError
 for f in glob.glob(os.path.join(root, "deploy/jetson/requirements*.txt")):
     raw = open(f, "rb").read()
