@@ -376,3 +376,71 @@ ROI=0.10,0.08;0.90,0.10;0.92,0.90;0.08,0.88   # 或按托盘标定填多边形
 python tools/eval_fp.py --weights runs/best_after_neg2.pt --data data/mix_v3 \
     --data2 data/negatives --device 0
 ```
+
+---
+
+## 13. 实机跑通记录（Jetson Nano 4GB / L4T r32.5.2 = JetPack 4.5.1）
+
+> ⚠ 现场这台 Nano 是 **JetPack 4.5.1**（不是 4.6.x），GPU 是 **Tegra X1 = Maxwell / ARMv8.0**。
+> 这决定了后面所有依赖取舍 —— **pip 上稍新的 aarch64 轮子都是按 ARMv8.2 编的，在这颗 CPU 上直接 SIGILL**。
+
+### 13.1 依赖取舍（实测踩坑表）
+
+| 组件 | 试过的方案 | 结果 | 最终采用 |
+|---|---|---|---|
+| numpy | pip 1.19.5 / 1.18.5 | ❌ Illegal instruction | **pip 1.19.2**（实测可用的最后一个版本） |
+| OpenCV | pip opencv-python-headless 4.5.4 | ❌ Illegal instruction | **apt 的 python3-opencv 3.2**（只做编解码） |
+| OpenCV | 宿主自编 3.4.5（挂载进容器） | ⚠ 能导入但解析不了 YOLOv8 的 ONNX | 放弃 |
+| ONNX 推理 | cv2.dnn | ❌ apt 的 3.2 **没有 dnn 模块** | — |
+| ONNX 推理 | onnxruntime 1.9.0 + numpy 1.13.3 | ❌ 段错误 | — |
+| ONNX 推理 | **onnxruntime 1.9.0 + numpy 1.19.2** | ✅ 可用（~750ms/帧 CPU） | 备用路径 `ENGINE=ort` |
+| ONNX 推理 | **TensorRT FP16 引擎** | ✅ **46.6ms/帧**，精度与 FP32 完全一致 | **主路径 `ENGINE=trt`** |
+
+**教训**：在被"旧 ARMv8.0 + 老 JetPack"锁死的板子上，**能用 apt/官方为设备编译的二进制就别用 pip 轮子**。
+
+### 13.2 TensorRT FP16（Nano 上的最优解）
+
+```bash
+# 在 Jetson 上、项目根目录执行：构建 FP16 引擎（约 15 分钟，TRT 7.1 的 tactics 搜索较慢）
+bash scripts/build-trt-on-jetson.sh --check        # 先体检
+bash scripts/build-trt-on-jetson.sh                # 构建 models/detect/goods_yolov8n_640_fp16.engine
+```
+
+**为什么是 FP16 不是 INT8**：Tegra X1（Maxwell, SM 5.3）**没有 INT8 张量核、也没有 DP4A 指令**，
+TRT 的 INT8 只能靠 FP16 模拟 —— 基本不提速还掉精度。INT8 留给 Xavier/Orin。
+
+实测对比（同一张 1280² 实拍图，含 JPEG 解码 + 预处理 + NMS 的**完整 detect()**）：
+
+| 路径 | 单帧耗时 | 检测结果 |
+|---|---|---|
+| ONNX Runtime（CPU，numpy 1.19.2） | 1035 ~ 1443 ms | box [464,176,**733**,432] conf 0.947 |
+| **TensorRT FP16（GPU）** | **218 ~ 244 ms** | box [464,176,**732**,432] conf **0.947** |
+
+`trtexec` 纯推理基准：**GPU 前向 46.6ms · 吞吐 21.2 qps**（对比 CPU ORT ~750ms → **约 16 倍**）。
+识别循环帧率 **0.6 → 1.2~1.3 fps**；配合 `AUTO_CONFIRM_FRAMES` 从 4 降到 2，确认一件货物的时间
+从约 6.7 秒降到约 1.6 秒。
+
+**容器里怎么跑 TRT（关键点）**：
+
+1. 镜像内 apt 装 `python3-libnvinfer`（TRT 7.1.3 运行时+Python 绑定）+ `cuda-cudart/nvrtc/cublas/cudnn`；
+2. 显存管理用 **ctypes 直接调 libcudart**（`cudaMalloc/cudaMemcpyAsync/cudaStreamCreate`）——
+   JetPack 上装不到 pycuda 轮子，而 `tensorrt` 绑定本身不需要它；
+3. compose 里给 sort-yolo 开 `privileged: true`（拿到 `/dev/nvhost-*` GPU 设备节点）
+   并挂载宿主 `/usr/lib/aarch64-linux-gnu/tegra`（`libcuda.so.1` 驱动只能来自宿主）+ `LD_LIBRARY_PATH`；
+4. 引擎与 GPU 架构 + TRT 版本绑定，**必须在设备上用本机 trtexec 构建**。
+
+### 13.3 与现场 ROS2 容器共存（4GB 内存的分配）
+
+现场 `ros2_arm_container`（`wheeltec_ros2_astra:foxy`）曾被 **OOM 杀掉（Exited 137）**。
+因此给本项目的 4 个容器都加了硬限额（compose v1 里实际生效的是 `deploy.resources.limits`）：
+
+| 容器 | CPU 上限 | 内存上限 | 实测占用 |
+|---|---|---|---|
+| sort-yolo（TRT） | 2.0 核 | **1200M**（TRT/CUDA 上下文本身 500~700MB） | 876 MB |
+| sort-vision | 1.5 核 | 512M | 110 MB |
+| sort-cnn | 0.5 核 | 384M | 92 MB |
+| sort-gateway | 0.5 核 | 320M | 37 MB |
+| **合计上限** | 4.5 核 | **2.4 GB** | ~1.1 GB |
+
+即：**给现场 ROS2/机械臂容器始终留出 ≥1.5GB 内存与 CPU 余量**，且不改动 docker 守护进程
+（不重启 docker，不碰现场容器）。
