@@ -119,8 +119,14 @@ AUTO_DRY_RUN=1                # ⚠ 1=只算不动机器人，现场确认无误
 ROBOT_URL=http://127.0.0.1:8120
 ARM_SERVICE=/arm_pick_place
 BRIDGE_PORT=8120
-ROS_DOMAIN_ID=0
-RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+# 现场已有 ROS2 容器时：不用重新拉镜像，桥接容器直接基于现场镜像构建一层。
+# 最省事：bash scripts/adopt-existing-ros2.sh [现场容器名]   ← 自动探测并回填下面几项
+ROS_IMAGE=wheeltec_ros2_astra:foxy    # 现场 ros2 容器用的镜像（本机已有，不联网拉取）
+ROS_DOMAIN_ID=95                      # ⚠ 必须与现场容器一致（不一致=互相看不见对方话题）
+RMW_IMPLEMENTATION=                   # 留空=随镜像默认；现场用 CycloneDDS 就填 rmw_cyclonedds_cpp
+CYCLONEDDS_URI=                       # 现场若设了 CycloneDDS 配置，adopt 脚本会导出并填 file:///app/cyclonedds.xml
+ROS_NETWORK_MODE=host                 # 现场容器是 host → host；否则填 container:<现场容器名>
 
 # ---- 深度 / 2.5D 定位（可选）----
 DEPTH_URL=http://127.0.0.1:8123/depth.png
@@ -232,6 +238,37 @@ curl -s http://localhost/health         # 网关 + 前端
 `detections` 里应出现 1 条、`conf` ≥ 0.8。若 `engine` 退化成 `classic`，
 说明 yolo/cnn 容器没起来，先看 `docker logs sort-yolo`。
 
+## 3.4 现场已有 ROS2 容器？直接编排进来，不要重新拉
+
+现场通常已经有跑通的 ROS2 容器（`ros2_arm_container` / `wheeltec_ros2_astra:foxy`，
+里面跑着机械臂驱动与 Astra 相机）。本项目的 `ros2` 服务**不拉 `ros:foxy-ros-base`**，
+而是在**现场镜像上加薄薄一层**（装 fastapi；装不上会自动退回内置 stdlib HTTP 服务）：
+
+```bash
+# 一键探测现场容器并把配置写进 .env（镜像/域号/RMW/网络模式/CycloneDDS 配置）
+bash scripts/adopt-existing-ros2.sh                      # 默认容器名 ros2_arm_container
+bash scripts/adopt-existing-ros2.sh 你的容器名
+bash scripts/adopt-existing-ros2.sh --dry-run            # 只探测不改配置
+
+docker-compose -f docker-compose.jetson.yml build ros2   # 基镜像=现场镜像，不联网
+docker-compose -f docker-compose.jetson.yml up -d ros2
+
+# 验证：在自己容器里必须能看到现场的话题（看不到=域号或 RMW 不一致）
+docker exec sort-ros-bridge bash -lc 'source /opt/ros/$ROS_DISTRO/setup.bash; ros2 topic list'
+curl -s http://localhost:8120/health
+```
+
+**三个必须对齐的东西**（adopt 脚本会自动处理，手动排查时看这里）：
+
+| 项 | 现场值 | 不一致的后果 |
+|---|---|---|
+| `ROS_DOMAIN_ID` | 例如 **95** | 完全看不见对方的话题，`ros2 topic list` 是空的 |
+| `RMW_IMPLEMENTATION` | 例如 `rmw_cyclonedds_cpp`（Foxy 默认是 `rmw_fastrtps_cpp`） | 同上：不同 DDS 实现互相发现不了 |
+| 网络模式 | 现场是 `host` → 我们也 `host`；否则用 `container:<现场容器名>` 共享其网络命名空间 | 非 host 时多播发现失败 |
+
+桥接容器只做两件事：**HTTP :8120 ← 网关 → ROS2 话题**（驱动机械臂）与
+**话题 → HTTP :8123**（给视觉容器提供彩色/深度）。它不启动任何驱动，**不会和现场容器抢设备**。
+
 ## 3.5 把推理跑到最优（Jetson Nano）
 
 Nano 的瓶颈几乎全在检测前向。三条路径**自动降级**，`/health` 的 `engine` 与 `dnn_backend` 会告诉你实际走哪条：
@@ -339,8 +376,11 @@ if bad:
     for b in bad:
         print("     -", b)
     sys.exit(1)
+def _ok_arg(f):
+    t = open(f, encoding="utf-8").read()
+    return "ARG BASE_IMAGE" in t or "ARG ROS_IMAGE" in t   # 桥接镜像是 ARG ROS_IMAGE
 missing = [os.path.basename(f) for f in glob.glob(os.path.join(root, "deploy/jetson/Dockerfile*"))
-           if "ARG BASE_IMAGE" not in open(f, encoding="utf-8").read()]
+           if not _ok_arg(f)]
 if missing:
     print("  ❌ 这些 Dockerfile 没做成可换基镜像（缺 ARG BASE_IMAGE）：%s" % missing)
     sys.exit(1)

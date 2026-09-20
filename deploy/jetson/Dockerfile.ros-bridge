@@ -1,0 +1,39 @@
+# ============================================================
+# Jetson · ROS 2 桥接容器（复用现场已有镜像，不重新拉取）
+# ------------------------------------------------------------
+# 现场已经跑通了 ROS2 容器（例如 ros2_arm_container / wheeltec_ros2_astra:foxy），
+# 我们**不重新拉 ros:foxy-ros-base**，而是在现场镜像上加一层薄薄的依赖：
+#   · fastapi / uvicorn  —— 桥接节点把 HTTP 请求转成 ROS 2 话题（网关 → 机械臂）
+#   · 顺便把 pip 源换成阿里云，避免构建时卡在 pypi.org
+#
+# 构建（由 compose 自动带上参数）：
+#   docker-compose -f docker-compose.jetson.yml build ros2
+#
+# 现场镜像不同时，改 .env 里的 ROS_IMAGE 即可（可用 scripts/adopt-existing-ros2.sh 自动探测）。
+# ============================================================
+ARG ROS_IMAGE=wheeltec_ros2_astra:foxy
+FROM ${ROS_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+# 说明：不加行尾注释 —— Jetson 上的经典 Dockerfile 解析器会把 "ENV X=Y # 注释" 里的 # 当第二个 name=value
+
+# 国内网络：apt 换阿里云（只在需要装 pip 时才用得到）
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list ]; then \
+        sed -i -e 's@http://archive.ubuntu.com/@http://mirrors.aliyun.com/@g' \
+               -e 's@http://security.ubuntu.com/@http://mirrors.aliyun.com/@g' \
+               -e 's@http://ports.ubuntu.com/@http://mirrors.aliyun.com/@g' \
+               /etc/apt/sources.list || true; \
+    fi; \
+    if ! command -v pip3 >/dev/null 2>&1 && ! python3 -m pip --version >/dev/null 2>&1; then \
+        apt-get update && apt-get install -y --no-install-recommends python3-pip \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi; \
+    python3 -m pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ "pip<22" "setuptools<60" wheel >/dev/null 2>&1 || true; \
+    python3 -m pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ \
+        "fastapi<0.100" "uvicorn<0.24" "pydantic<2" "python-multipart" \
+    || echo "WARN: fastapi 安装失败，桥接节点会退回内置 stdlib HTTP 服务（功能不变）"
+
+# 桥接脚本在 compose 里只读挂载，镜像内不复制（改脚本不用重建镜像）
+WORKDIR /root/ws
+CMD ["bash", "-lc", "python3 /app/ros_bridge_ros2.py"]

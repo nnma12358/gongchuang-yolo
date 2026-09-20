@@ -194,23 +194,36 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
-  # ---------------- ROS 2 运行时容器（机械臂驱动 / Astra / MoveIt / 桥接） ----------------
-  # 与现场 Jetson 上的 ROS 2 Foxy 环境一致；host 网络 + CycloneDDS 与宿主机节点互通。
-  # 默认命令 = 启动 ROS2 桥接节点（HTTP :8120 ← 网关；ROS2 话题 → 机械臂）。
-  # 若你的驱动已有自己的镜像/工作空间，改 ROS2_IMAGE / ROS2_CMD 即可：
-  #   ROS2_IMAGE=my-robot:foxy ROS2_CMD="bash -lc 'source /ws/install/setup.bash && ros2 launch arm_bringup arm.launch.py'"
+  # ---------------- ROS 2 桥接容器（复用现场已有镜像，不重新拉取） ----------------
+  # 现场已经跑通 ROS2（如 ros2_arm_container / wheeltec_ros2_astra:foxy）时：
+  #   本容器**只做桥接**（HTTP :8120 ← 网关；ROS2 话题 → 机械臂）+ 深度/彩色转 HTTP（:8123），
+  #   不启动任何驱动，所以不会和现场容器抢设备。
+  #   基镜像 = 现场镜像（加一层 fastapi），因此**不需要联网拉镜像**。
+  # 关键：ROS_DOMAIN_ID 必须与现场容器一致（默认 95）；RMW 实现也必须一致。
+  #   不确定就跑：bash scripts/adopt-existing-ros2.sh   （自动探测并写进 .env）
   ros2:
-    image: ${ROS2_IMAGE:-ros:foxy-ros-base}
+    # 不重新拉 ros:foxy-ros-base！直接在现场已跑通的镜像上加一层（装 fastapi）
+    build:
+      context: .
+      dockerfile: deploy/jetson/Dockerfile.ros-bridge
+      args:
+        ROS_IMAGE: ${ROS_IMAGE:-wheeltec_ros2_astra:foxy}
+    image: ${ROS_BRIDGE_TAG:-sort-ros-bridge:jetson}
     platform: linux/arm64
-    container_name: sort-ros2
+    container_name: sort-ros-bridge
     restart: unless-stopped
-    network_mode: host
+    # host：与现场容器同处宿主网络（最常用）；
+    # 若现场容器不是 host 网络，用 scripts/adopt-existing-ros2.sh 改成 container:<现场容器名>
+    network_mode: ${ROS_NETWORK_MODE:-host}
     environment:
       - TZ=Asia/Shanghai
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-95}
       - ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}
-      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
-      - CYCLONEDDS_URI=file:///app/cyclonedds.xml
+      # 留空 = 用现场镜像自带的 RMW（必须与现场容器一致，否则互相发现不了；
+      #        现场若用 CycloneDDS，adopt 脚本会自动填成 rmw_cyclonedds_cpp）
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-}
+      - CYCLONEDDS_URI=${CYCLONEDDS_URI:-}
+      - ROS_DISTRO=${ROS_DISTRO:-foxy}
       # 桥接参数
       - PORT=${BRIDGE_PORT:-8120}
       - ARM_TOPIC=${ARM_TOPIC:-/arm/pick_place}
@@ -228,13 +241,14 @@ services:
     volumes:
       - ./deploy/jetson/ros_bridge_ros2.py:/app/ros_bridge_ros2.py:ro
       - ./deploy/jetson/depth_http_node.py:/app/depth_http_node.py:ro
-      - ./deploy/jetson/cyclonedds.xml:/app/cyclonedds.xml:ro
+      - ${CYCLONEDDS_FILE:-./deploy/jetson/cyclonedds.xml}:/app/cyclonedds.xml:ro
       # 现场 ROS2 工作空间（按实际路径改；不存在时 compose 会自动建空目录）
       - ${ROS2_WS:-./.ros2_ws}:/root/ws
     working_dir: /root/ws
     command: >
-      bash -lc "python3 -m pip install --quiet --disable-pip-version-check
-      'fastapi<0.100' 'uvicorn<0.24' >/dev/null 2>&1 || true;
+      bash -lc "python3 -c 'import fastapi' 2>/dev/null ||
+                python3 -m pip install --quiet --disable-pip-version-check
+                -i https://mirrors.aliyun.com/pypi/simple/ 'fastapi<0.100' 'uvicorn<0.24' || true;
       python3 /app/depth_http_node.py &
       exec python3 /app/ros_bridge_ros2.py"
     logging:

@@ -152,11 +152,74 @@ def report_result(seq, status, detail=""):
 
 
 # ---------------- HTTP 接口（供网关调用） ----------------
-def main():
-    from fastapi import Body, FastAPI
-    import uvicorn
+def _handle(path, payload):
+    """路由的**纯逻辑**部分（FastAPI 与 stdlib 两条后端共用，保证行为一致）"""
+    if path == "/health":
+        return 200, {"ok": True, "ros_ready": STATE["ros_ready"], "dry_run": DRY_RUN,
+                     "topic": ARM_TOPIC, "service": ARM_SERVICE or None,
+                     "gateway": GATEWAY_URL or None, "done": len(STATE["done"]),
+                     "last": STATE["last"]}
+    if path == "/execute":
+        STATE["last"] = payload
+        cmd = build_command(payload or {})
+        res = send_to_arm(cmd)
+        if res.get("ok"):
+            STATE["done"].append(cmd)
+        return 200, {"ok": res.get("ok", False), "mode": res.get("mode"),
+                     "command": cmd, "error": res.get("error")}
+    if path == "/result":
+        report_result((payload or {}).get("seq"), (payload or {}).get("status", "unknown"),
+                      (payload or {}).get("detail", ""))
+        return 200, {"ok": True}
+    if path == "/queue":
+        return 200, STATE
+    return 404, {"detail": "not found"}
 
+
+def serve_stdlib():
+    """无 fastapi 时的内置 HTTP 服务（只用标准库）——这样现场镜像里什么都不用装也能跑。"""
+    import json as _json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, obj):
+            body = _json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            code, obj = _handle(self.path.split("?")[0], None)
+            self._send(code, obj)
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                payload = _json.loads(self.rfile.read(n) or b"{}")
+            except Exception:
+                payload = {}
+            code, obj = _handle(self.path.split("?")[0], payload)
+            self._send(code, obj)
+
+    logger.info("ROS2 桥接启动（内置 stdlib HTTP）: :{0} | topic={1} | dry_run={2}".format(
+        PORT, ARM_TOPIC, DRY_RUN))
+    ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
+
+
+def main():
     ros_init()
+    try:
+        from fastapi import Body, FastAPI
+        import uvicorn
+    except ImportError:
+        logger.warning("未安装 fastapi → 使用内置 stdlib HTTP 服务（功能相同）")
+        return serve_stdlib()
+
     app = FastAPI(title="sort-ros2-bridge", docs_url=None, redoc_url=None)
 
     @app.get("/health")

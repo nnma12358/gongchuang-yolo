@@ -36,7 +36,9 @@ logger = logging.getLogger("depth-http")
 
 COLOR_TOPIC = os.environ.get("COLOR_TOPIC", "/overhead_camera/color/image_raw")
 DEPTH_TOPIC = os.environ.get("DEPTH_TOPIC", "/overhead_camera/depth/image_raw")
-PORT = int(os.environ.get("PORT", "8123"))
+# 注意：本容器同时跑「桥接节点(默认 PORT=8120)」与「深度 HTTP 节点」，
+# 两者不能抢同一个端口 —— 这里优先读 DEPTH_HTTP_PORT，PORT 只作兜底。
+PORT = int(os.environ.get("DEPTH_HTTP_PORT", os.environ.get("PORT", "8123")))
 JPEG_QUALITY = int(os.environ.get("JPEG_QUALITY", "85"))
 DEPTH_SCALE = float(os.environ.get("DEPTH_SCALE", "0.001"))
 RELIABLE_QOS = os.environ.get("RELIABLE_QOS", "1") == "1"
@@ -121,13 +123,110 @@ def start_ros():
     threading.Thread(target=rclpy.spin, args=(node,), daemon=True).start()
 
 
+def _render(path):
+    """各接口的纯逻辑（两条后端共用）：返回 (状态码, 字节, content_type)"""
+    import cv2
+    now = time.time()
+    if path == "/health":
+        with LOCK:
+            obj = {
+                "color": FRAMES["color"] is not None,
+                "depth": FRAMES["depth"] is not None,
+                "color_seq": FRAMES["color_seq"], "depth_seq": FRAMES["depth_seq"],
+                "color_age": round(now - FRAMES["color_ts"], 3) if FRAMES["color_ts"] else -1.0,
+                "depth_age": round(now - FRAMES["depth_ts"], 3) if FRAMES["depth_ts"] else -1.0,
+                "color_fps": FRAMES["color_fps"], "depth_fps": FRAMES["depth_fps"],
+                "topics": {"color": COLOR_TOPIC, "depth": DEPTH_TOPIC},
+            }
+        import json as _json
+        return 200, _json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json"
+    with LOCK:
+        color = None if FRAMES["color"] is None else FRAMES["color"].copy()
+        depth = None if FRAMES["depth"] is None else FRAMES["depth"].copy()
+    if path == "/color.jpg":
+        if color is None:
+            return 503, '{"detail":"无彩色帧"}'.encode("utf-8"), "application/json"
+        ok, buf = cv2.imencode(".jpg", color, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+        return 200, buf.tobytes(), "image/jpeg"
+    if path == "/depth.png":
+        if depth is None:
+            return 503, '{"detail":"无深度帧"}'.encode("utf-8"), "application/json"
+        ok, buf = cv2.imencode(".png", depth)
+        return 200, buf.tobytes(), "image/png"
+    if path == "/depth_preview.jpg":
+        if depth is None:
+            return 503, '{"detail":"无深度帧"}'.encode("utf-8"), "application/json"
+        valid = depth[depth > 0]
+        lo, hi = (float(np.percentile(valid, 5)), float(np.percentile(valid, 95))) if valid.size else (0, 1)
+        norm = np.clip((depth.astype(np.float32) - lo) / max(1e-6, hi - lo), 0, 1)
+        norm[depth == 0] = 0
+        color_map = cv2.applyColorMap((norm * 255).astype(np.uint8), cv2.COLORMAP_JET)
+        ok, buf = cv2.imencode(".jpg", color_map)
+        return 200, buf.tobytes(), "image/jpeg"
+    return 404, b'{"detail":"not found"}', "application/json"
+
+
+def serve_stdlib():
+    """无 fastapi 时的内置 HTTP 服务（标准库实现，含 MJPEG 推流）"""
+    import cv2
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _plain(self, code, body, ctype):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            path = self.path.split("?")[0]
+            if path == "/color.mjpg":
+                boundary = "frame"
+                self.send_response(200)
+                self.send_header("Content-Type",
+                                 "multipart/x-mixed-replace; boundary={0}".format(boundary))
+                self.end_headers()
+                try:
+                    while True:
+                        with LOCK:
+                            f = None if FRAMES["color"] is None else FRAMES["color"].copy()
+                        if f is not None:
+                            ok, buf = cv2.imencode(".jpg", f,
+                                                   [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+                            if ok:
+                                jpg = buf.tobytes()
+                                self.wfile.write(b"--" + boundary.encode() +
+                                                 b"\r\nContent-Type: image/jpeg\r\n"
+                                                 b"Content-Length: " + str(len(jpg)).encode() +
+                                                 b"\r\n\r\n" + jpg + b"\r\n")
+                        time.sleep(1.0 / 15.0)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+            code, body, ctype = _render(path)
+            self._plain(code, body, ctype)
+
+    logger.info("深度 HTTP 节点启动（内置 stdlib）: :{0} | color={1} | depth={2}".format(
+        PORT, COLOR_TOPIC, DEPTH_TOPIC))
+    ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
+
+
 def main():
     import cv2
-    from fastapi import FastAPI
-    from fastapi.responses import JSONResponse, Response
-    import uvicorn
 
     start_ros()
+    try:
+        from fastapi import FastAPI
+        from fastapi.responses import JSONResponse, Response
+        import uvicorn
+    except ImportError:
+        logger.warning("未安装 fastapi → 使用内置 stdlib HTTP 服务（含 MJPEG）")
+        return serve_stdlib()
+
     app = FastAPI(title="ros2-depth-http", docs_url=None, redoc_url=None)
 
     @app.get("/health")
