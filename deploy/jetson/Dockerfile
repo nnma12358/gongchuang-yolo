@@ -12,7 +12,10 @@
 #   docker compose -f docker-compose.jetson.yml up -d
 #   显示屏浏览器（Jetson 本机 HDMI 屏）：chromium-browser --kiosk http://localhost
 # ============================================================
-FROM nvcr.io/nvidia/l4t-base:r32.7.1
+# 基础镜像可用 --build-arg / .env 里的 BASE_IMAGE 换成国内代理，例如：
+#   docker.m.daocloud.io/nvcr.io/nvidia/l4t-base:r32.7.1
+ARG BASE_IMAGE=nvcr.io/nvidia/l4t-base:r32.7.1
+FROM ${BASE_IMAGE}
 
 # ---- 系统依赖：Python3 / OpenCV(JetPack 自带 4.1.1) / Pillow / numpy ----
 # 国内网络：先切阿里云 apt 镜像（L4T 基础镜像默认走 archive.ubuntu.com，国内常超时）

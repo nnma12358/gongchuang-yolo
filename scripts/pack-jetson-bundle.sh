@@ -74,6 +74,14 @@ cat > "$STAGE/.env.jetson" <<'ENVEOF'
 #   cp .env.jetson .env
 # ============================================================
 
+# ---- 基础镜像（国内 nvcr.io 常不可达，换成代理前缀即可，不用改代码）----
+# 先跑 bash scripts/preflight-jetson.sh 体检，它会告诉你哪个源通
+BASE_IMAGE=nvcr.io/nvidia/l4t-base:r32.7.1
+# BASE_IMAGE=docker.m.daocloud.io/nvcr.io/nvidia/l4t-base:r32.7.1
+# ROS 镜像（只有用 --profile ros / ros1 时才需要）
+ROS2_IMAGE=ros:foxy-ros-base
+ROS1_IMAGE=ros:melodic-ros-base
+
 # ---- 相机 ----
 CAMERA_SOURCE=auto            # auto | synthetic | index | url
 CAMERA_INDEX=0
@@ -157,6 +165,40 @@ python3 scripts/check-compose.py docker-compose.jetson.yml   # 同类问题提�
 > 命令用 `docker-compose`（v1，JetPack 自带）；若你装了 v2 插件，`docker compose` 等价。
 > `docker-compose config` 里出现 "deploy key will be ignored" 的**警告是正常的**（CPU/内存限制只在 swarm 生效），不影响运行。
 
+## 1.5 构建前体检（强烈建议，能省掉 90% 的失败）
+
+```bash
+bash scripts/preflight-jetson.sh
+```
+
+它会查：DNS 是否可用、nvcr.io / docker.io / 阿里云源是否可达、Docker 是否配了镜像加速与 DNS、
+磁盘是否够 8G，并在最后**直接打印修法**。两类最常见的失败：
+
+| 报错 | 原因 | 修法 |
+|---|---|---|
+| `lookup nvcr.io on 127.0.1.1:53: connection refused` | 宿主 DNS 解析器（systemd-resolved）没工作 | `sudo systemctl restart systemd-resolved`，或把 `/etc/resolv.conf` 写成 `nameserver 223.5.5.5` |
+| 拉基镜像超时 / `Get https://nvcr.io/v2/: ...` | nvcr.io 国内不可达 | `.env` 里 `BASE_IMAGE=docker.m.daocloud.io/nvcr.io/nvidia/l4t-base:r32.7.1` |
+
+给 Docker 配镜像加速与 DNS（一次配好，之后所有镜像都受益）：
+
+```bash
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json >/dev/null <<'JSON'
+{
+  "dns": ["223.5.5.5", "114.114.114.114"],
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://docker.1ms.run",
+    "https://docker.xuanyuan.me"
+  ],
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "20m", "max-file": "3" }
+}
+JSON
+sudo systemctl restart docker
+docker info | grep -A3 "Registry Mirrors"
+```
+
 ## 2. 构建 + 启动
 
 ```bash
@@ -232,6 +274,7 @@ docker-compose.jetson-devices.yml 叠加：挂 /dev/video* 相机设备
 deploy/jetson/                    4 个 Dockerfile + requirements + ROS 桥/深度节点脚本
 scripts/build-trt-on-jetson.sh    ★ 在设备上构建 TensorRT FP16 引擎 + 实测 + 部署
 scripts/gen-trt-override.sh       ★ 按设备真实路径生成 TRT 运行时 compose 叠加文件
+scripts/preflight-jetson.sh       ★ 构建前体检：DNS / 镜像源可达性 / Docker 配置 / 磁盘
 server/                           gateway.py vision_server.py yolo_server.py cnn_server.py
                                   detect_core.py pose.py catalog.py …
 models/detect/goods_yolov8n_640_fp32.onnx   ✅ 检测模型（YOLOv8n 单类 goods）
@@ -296,7 +339,12 @@ if bad:
     for b in bad:
         print("     -", b)
     sys.exit(1)
-print("  ✅ Dockerfile 兼容 Jetson 的经典解析器（无行尾注释 / 无 BuildKit 专属语法）")
+missing = [os.path.basename(f) for f in glob.glob(os.path.join(root, "deploy/jetson/Dockerfile*"))
+           if "ARG BASE_IMAGE" not in open(f, encoding="utf-8").read()]
+if missing:
+    print("  ❌ 这些 Dockerfile 没做成可换基镜像（缺 ARG BASE_IMAGE）：%s" % missing)
+    sys.exit(1)
+print("  ✅ Dockerfile 兼容经典解析器，且基础镜像可用 BASE_IMAGE 覆盖（国内可换代理源）")
 PYEOF
 [ $? -eq 0 ] || { echo "包不完整，已中止"; exit 1; }
 

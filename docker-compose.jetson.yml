@@ -30,6 +30,9 @@ services:
     build:
       context: .
       dockerfile: deploy/jetson/Dockerfile.yolo
+      args:
+        # 基础镜像：国内 nvcr.io 常不可达，可在 .env 里换成代理前缀
+        BASE_IMAGE: ${BASE_IMAGE:-nvcr.io/nvidia/l4t-base:r32.7.1}
     image: sort-yolo:jetson
     container_name: sort-yolo
     restart: unless-stopped
@@ -62,6 +65,9 @@ services:
     build:
       context: .
       dockerfile: deploy/jetson/Dockerfile.cnn
+      args:
+        # 基础镜像：国内 nvcr.io 常不可达，可在 .env 里换成代理前缀
+        BASE_IMAGE: ${BASE_IMAGE:-nvcr.io/nvidia/l4t-base:r32.7.1}
     image: sort-cnn:jetson
     container_name: sort-cnn
     restart: unless-stopped
@@ -92,6 +98,9 @@ services:
     build:
       context: .
       dockerfile: deploy/jetson/Dockerfile.vision
+      args:
+        # 基础镜像：国内 nvcr.io 常不可达，可在 .env 里换成代理前缀
+        BASE_IMAGE: ${BASE_IMAGE:-nvcr.io/nvidia/l4t-base:r32.7.1}
     image: sort-vision:jetson
     container_name: sort-vision
     restart: unless-stopped
@@ -145,6 +154,9 @@ services:
     build:
       context: .
       dockerfile: deploy/jetson/Dockerfile
+      args:
+        # 基础镜像：国内 nvcr.io 常不可达，可在 .env 里换成代理前缀
+        BASE_IMAGE: ${BASE_IMAGE:-nvcr.io/nvidia/l4t-base:r32.7.1}
     image: sort-gateway:jetson
     container_name: sort-gateway
     restart: unless-stopped
@@ -232,7 +244,7 @@ services:
   # ---------------- 兼容：ROS 1 桥接（仅当机械臂仍跑 ROS 1 时用） ----------------
   # 默认不启动；需要时加 --profile ros1
   ros-bridge:
-    image: ros:melodic-ros-base
+    image: ${ROS1_IMAGE:-ros:melodic-ros-base}
     platform: linux/arm64
     container_name: sort-ros-bridge
     restart: unless-stopped

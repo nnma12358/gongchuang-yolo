@@ -13,7 +13,10 @@
 # 构建（项目根目录）：
 #   docker build -f deploy/jetson/Dockerfile.yolo -t sort-yolo:jetson .
 # ============================================================
-FROM nvcr.io/nvidia/l4t-base:r32.7.1
+# 基础镜像可用 --build-arg / .env 里的 BASE_IMAGE 换成国内代理，例如：
+#   docker.m.daocloud.io/nvcr.io/nvidia/l4t-base:r32.7.1
+ARG BASE_IMAGE=nvcr.io/nvidia/l4t-base:r32.7.1
+FROM ${BASE_IMAGE}
 
 RUN set -e; \
     if [ -f /etc/apt/sources.list ]; then \
