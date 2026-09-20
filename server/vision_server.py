@@ -418,6 +418,7 @@ def load_table_reference():
 
 def fetch_depth():
     """拉取深度快照（带 0.3s 缓存；失败返回 None → 自动降级为纯 RGB）"""
+    import cv2
     import numpy as np
     if not DEPTH_URL:
         return None

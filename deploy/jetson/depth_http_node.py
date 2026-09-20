@@ -49,6 +49,24 @@ LOCK = threading.Lock()
 _COUNTERS = {"color_t0": time.time(), "color_n": 0, "depth_t0": time.time(), "depth_n": 0}
 
 
+def _seq_of(msg, key):
+    """取该帧的单调序号。
+
+    ROS2 的 std_msgs/Header **没有 seq 字段**（那是 ROS1 的），直接访问会抛
+    AttributeError 并让订阅回调整帧丢弃。这里优先用 header.stamp 的纳秒值，
+    取不到（无 stamp / 时间为 0）时退回自增计数。
+    """
+    hdr = getattr(msg, "header", None)
+    stamp = getattr(hdr, "stamp", None)
+    if stamp is not None:
+        ns = int(getattr(stamp, "sec", 0) or 0) * 1000000000 + int(getattr(stamp, "nanosec", 0) or 0)
+        if ns > 0:
+            return ns
+    k = key + "_seq"
+    _COUNTERS[k] = int(_COUNTERS.get(k, 0)) + 1
+    return _COUNTERS[k]
+
+
 def _qos():
     """现场结论：相机端 RELIABLE，订阅端必须匹配（否则 RGB 冻结）"""
     from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -95,7 +113,7 @@ def start_ros():
         except Exception as e:
             logger.warning("彩色解码失败: {0}".format(e)); return
         with LOCK:
-            FRAMES.update({"color": bgr, "color_ts": time.time(), "color_seq": msg.header.seq})
+            FRAMES.update({"color": bgr, "color_ts": time.time(), "color_seq": _seq_of(msg, "color")})
         _COUNTERS["color_n"] += 1
         now = time.time()
         if now - _COUNTERS["color_t0"] >= 2.0:
@@ -108,7 +126,7 @@ def start_ros():
         except Exception as e:
             logger.warning("深度解码失败: {0}".format(e)); return
         with LOCK:
-            FRAMES.update({"depth": d, "depth_ts": time.time(), "depth_seq": msg.header.seq})
+            FRAMES.update({"depth": d, "depth_ts": time.time(), "depth_seq": _seq_of(msg, "depth")})
         _COUNTERS["depth_n"] += 1
         now = time.time()
         if now - _COUNTERS["depth_t0"] >= 2.0:
@@ -221,7 +239,7 @@ def main():
     start_ros()
     try:
         from fastapi import FastAPI
-        from fastapi.responses import JSONResponse, Response
+        from fastapi.responses import JSONResponse, Response, StreamingResponse
         import uvicorn
     except ImportError:
         logger.warning("未安装 fastapi → 使用内置 stdlib HTTP 服务（含 MJPEG）")
@@ -296,7 +314,8 @@ def main():
                                b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
                 time.sleep(1.0 / 15.0)
 
-        return Response(content=gen(), media_type="multipart/x-mixed-replace; boundary={0}".format(boundary))
+        # MJPEG 是无限生成器，必须用 StreamingResponse（Response 会尝试 .encode() 而报错）
+        return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary={0}".format(boundary))
 
     @app.get("/points_camera.json")
     def points_camera():

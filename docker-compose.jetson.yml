@@ -253,7 +253,10 @@ services:
       - DEPTH_HTTP_PORT=${DEPTH_HTTP_PORT:-8123}
       - COLOR_TOPIC=${COLOR_TOPIC:-/camera/color/image_raw}   # 与现场 dry_run_config.json 一致
       - DEPTH_TOPIC=${DEPTH_TOPIC:-/camera/depth/image_raw}   # 同上
-      - RELIABLE_QOS=${RELIABLE_QOS:-1}
+      # 订阅端 QoS：0=BEST_EFFORT。现场 Astra(astra_camera_node) 以 BEST_EFFORT 发布，
+      # RELIABLE 订阅端与之不兼容、一帧都收不到；而 BEST_EFFORT 订阅端对 RELIABLE /
+      # BEST_EFFORT 两种发布端都兼容，故默认 0（更稳）。
+      - RELIABLE_QOS=${RELIABLE_QOS:-0}
     volumes:
       - ./deploy/jetson/ros_bridge_ros2.py:/app/ros_bridge_ros2.py:ro
       - ./deploy/jetson/depth_http_node.py:/app/depth_http_node.py:ro
