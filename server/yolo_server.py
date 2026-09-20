@@ -91,37 +91,82 @@ def load_classes():
     return ["goods"]
 
 
+
+def _load_cudart():
+    """加载 CUDA runtime（JetPack 上是 libcudart.so.10.2）"""
+    import ctypes
+    for name in ("libcudart.so.10.2", "libcudart.so.10.1", "libcudart.so"):
+        try:
+            return ctypes.CDLL(name)
+        except OSError:
+            continue
+    raise RuntimeError("找不到 libcudart.so（Jetson 上装 cuda-cudart-10-2）")
+
+
+class TrtRunner(object):
+    """TensorRT 引擎推理：tensorrt 绑定 + ctypes 调 cudart 管显存（不需要 pycuda）"""
+
+    H2D, D2H = 1, 2      # cudaMemcpyHostToDevice / DeviceToHost
+
+    def __init__(self, engine_path):
+        import ctypes
+        import tensorrt as trt
+        self.ctypes = ctypes
+        self.trt = trt
+        self.cudart = _load_cudart()
+        tlog = trt.Logger(trt.Logger.ERROR)
+        with open(engine_path, "rb") as f:
+            self.engine = trt.Runtime(tlog).deserialize_cuda_engine(f.read())
+        if self.engine is None:
+            raise RuntimeError("引擎反序列化失败（TRT 版本与构建时不一致？）")
+        self.context = self.engine.create_execution_context()
+        self.bindings, self.inputs, self.outputs = [], [], []
+        for i in range(self.engine.num_bindings):
+            shape = tuple(self.engine.get_binding_shape(i))
+            dtype = trt.nptype(self.engine.get_binding_dtype(i))
+            host = np.empty(int(np.prod(shape)), dtype)
+            dev = ctypes.c_void_p()
+            rc = self.cudart.cudaMalloc(ctypes.byref(dev), ctypes.c_size_t(host.nbytes))
+            if rc != 0:
+                raise RuntimeError("cudaMalloc 失败 rc=%d（显存不足？）" % rc)
+            rec = {"name": self.engine.get_binding_name(i), "host": host, "dev": dev,
+                   "shape": shape, "nbytes": host.nbytes, "dtype": dtype}
+            self.bindings.append(int(dev.value))
+            (self.inputs if self.engine.binding_is_input(i) else self.outputs).append(rec)
+        self.stream = ctypes.c_void_p()
+        self.cudart.cudaStreamCreate(ctypes.byref(self.stream))
+
+    def infer(self, x):
+        """x: (1,3,H,W) float32 → 输出列表（与 onnxruntime 的 run() 对齐）"""
+        ct = self.ctypes
+        inp = self.inputs[0]
+        np.copyto(inp["host"], np.ascontiguousarray(x).ravel())
+        self.cudart.cudaMemcpyAsync(inp["dev"], inp["host"].ctypes.data_as(ct.c_void_p),
+                                    ct.c_size_t(inp["nbytes"]), self.H2D, self.stream)
+        self.context.execute_async_v2(bindings=self.bindings,
+                                      stream_handle=self.stream.value or 0)
+        for out in self.outputs:
+            self.cudart.cudaMemcpyAsync(out["host"].ctypes.data_as(ct.c_void_p), out["dev"],
+                                        ct.c_size_t(out["nbytes"]), self.D2H, self.stream)
+        self.cudart.cudaStreamSynchronize(self.stream)
+        return [out["host"].reshape(out["shape"]).copy() for out in self.outputs]
+
+
 def load_model():
     if ENGINE == "trt":
-        # Jetson：直接加载 TensorRT 引擎（由 工创yolo tools/build_trt_engine.py 生成）
+        # Jetson：直接加载 TensorRT 引擎（由 scripts/build-trt-on-jetson.sh 在本机生成）
+        # 显存用 ctypes 直接调 CUDA runtime 管理 —— JetPack 上装不到 pycuda 轮子，
+        # 而 tensorrt 的 python 绑定本身不需要 pycuda，只缺一个分配显存的工具。
         try:
-            import pycuda.autoinit  # noqa: F401
-            import pycuda.driver as cuda
-            import tensorrt as trt
-            logger_t = trt.Logger(trt.Logger.ERROR)
-            with open(MODEL_PATH, "rb") as f:
-                engine = trt.Runtime(logger_t).deserialize_cuda_engine(f.read())
-            if engine is None:
-                raise RuntimeError("引擎反序列化失败")
-            context = engine.create_execution_context()
-            stream = cuda.Stream()
-            io, bindings = {"inputs": [], "outputs": []}, []
-            for i in range(engine.num_bindings):
-                shape = engine.get_binding_shape(i)
-                size = int(np.prod(shape))
-                dtype = trt.nptype(engine.get_binding_dtype(i))
-                host = cuda.pagelocked_empty(size, dtype)
-                dev = cuda.mem_alloc(host.nbytes)
-                bindings.append(int(dev))
-                rec = {"name": engine.get_binding_name(i), "host": host, "dev": dev, "shape": shape}
-                io["inputs" if engine.binding_is_input(i) else "outputs"].append(rec)
-            STATE.update({"engine": "tensorrt", "model": MODEL_PATH, "loaded_at": time.time(),
-                          "trt": {"engine": engine, "context": context, "stream": stream,
-                                  "bindings": bindings, "io": io}})
-            logger.info("已加载 TensorRT 引擎: {0}".format(MODEL_PATH))
+            runner = TrtRunner(MODEL_PATH)
+            STATE.update({"engine": "tensorrt", "model": MODEL_PATH,
+                          "loaded_at": time.time(), "trt": runner,
+                          "backend": "tensorrt(fp16)"})
+            logger.info("已加载 TensorRT 引擎: {0}（输入 {1} 输出 {2}）".format(
+                MODEL_PATH, runner.inputs[0]["shape"], runner.outputs[0]["shape"]))
             return
         except Exception as e:
-            logger.warning("TensorRT 加载失败（{0}），回退 OpenCV DNN".format(e))
+            logger.warning("TensorRT 加载失败（{0}），回退 ONNX Runtime".format(e))
     if ENGINE == "ort":
         try:
             import onnxruntime as ort
@@ -229,16 +274,7 @@ def detect(bgr):
     boxes, confs, clss = [], [], []
 
     if STATE["engine"] == "tensorrt":
-        import pycuda.driver as cuda
-        t = STATE["trt"]
-        x = blob_nchw(blob)
-        np.copyto(t["io"]["inputs"][0]["host"], x.ravel())
-        cuda.memcpy_htod_async(t["io"]["inputs"][0]["dev"], t["io"]["inputs"][0]["host"], t["stream"])
-        t["context"].execute_async_v2(bindings=t["bindings"], stream_handle=t["stream"].handle)
-        for o in t["io"]["outputs"]:
-            cuda.memcpy_dtoh_async(o["host"], o["dev"], t["stream"])
-        t["stream"].synchronize()
-        preds = np.array(t["io"]["outputs"][0]["host"]).reshape(t["io"]["outputs"][0]["shape"])
+        preds = STATE["trt"].infer(blob_nchw(blob))[0]
     elif STATE["engine"] == "onnxruntime":
         sess = _ORT["session"]
         inp = sess.get_inputs()[0].name

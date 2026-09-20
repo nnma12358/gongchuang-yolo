@@ -40,23 +40,30 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PORT=8101
-      - MODEL_PATH=/app/models/detect/goods_yolov8n_640_fp32.onnx
+      # TensorRT FP16 引擎（本机 trtexec 构建，GPU 前向 46ms，比 CPU ORT 快约 20 倍）
+      - MODEL_PATH=${MODEL_PATH:-/app/models/detect/goods_yolov8n_640_fp16.engine}
       - CLASSES_JSON=/app/models/detect/classes.json
       - IMGSZ=${YOLO_IMGSZ:-640}          # 必须与训练 imgsz 一致（本模型 640；
                                           #   现场确实漏小目标时再试 960，但那是未验证配置）
       - CONF_THRES=${YOLO_CONF:-0.35}
       - IOU_THRES=${YOLO_IOU:-0.45}
-      - ENGINE=${YOLO_ENGINE:-ort}        # ort=ONNX Runtime（本镜像已装，Tegra X1 实测可用）
+      - ENGINE=${YOLO_ENGINE:-trt}        # trt=TensorRT FP16 引擎（最快；加载失败自动回退 ort）
+                                          # ort=ONNX Runtime CPU（实测可用，约 1s/帧）
                                           # opencv=OpenCV DNN（apt 的 3.2 无 dnn 模块，用不了）
       - OMP_NUM_THREADS=4
       - OPENBLAS_NUM_THREADS=4
+      - LD_LIBRARY_PATH=/opt/tegra:/usr/lib/aarch64-linux-gnu
+    # GPU 设备节点（TRT 需要 /dev/nvhost-*；不影响其它容器各自的权限）
+    privileged: true
     volumes:
-      - ./models:/app/models:ro           # best.onnx / classes.json（换模型不必重建镜像）
+      - ./models:/app/models:ro           # ONNX / .engine（换模型不必重建镜像）
+      - /usr/lib/aarch64-linux-gnu/tegra:/opt/tegra:ro   # libcuda.so.1（Tegra 驱动，只能来自宿主）
+
     deploy:
       resources:
         limits:
           cpus: '2.0'
-          memory: 1024M
+          memory: 1200M   # TRT/CUDA 上下文本身要 500~700MB，留足余量
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
@@ -88,8 +95,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.0'
-          memory: 512M
+          cpus: '0.5'
+          memory: 384M
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
@@ -144,8 +151,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 1024M
+          cpus: '1.5'
+          memory: 512M
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
@@ -171,7 +178,7 @@ services:
       - CALIB_PATH=/app/data/calib.json           # 标定文件（scripts/calibrate.py 生成）
       - GRASP_ENABLED=${GRASP_ENABLED:-1}         # 是否解算抓取位姿
       - AUTO_INTERVAL=${AUTO_INTERVAL:-0.6}       # 自动分拣轮询间隔(秒)
-      - AUTO_CONFIRM_FRAMES=${AUTO_CONFIRM_FRAMES:-4}   # 连续 N 帧同类才入库
+      - AUTO_CONFIRM_FRAMES=${AUTO_CONFIRM_FRAMES:-2}   # 连续 N 帧同类才入库
       - AUTO_CONF_MIN=${AUTO_CONF_MIN:-0.6}
       - AUTO_SINGLE_ITEM=${AUTO_SINGLE_ITEM:-1}   # 一次一件（赛项）
       - AUTO_DRY_RUN=${AUTO_DRY_RUN:-1}           # 1=不实际驱动机械臂（联调）
@@ -189,8 +196,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.5'
-          memory: 768M
+          cpus: '0.5'
+          memory: 320M
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
