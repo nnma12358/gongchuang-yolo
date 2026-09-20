@@ -1,0 +1,42 @@
+# 现场真实尺度微调配方（顶置 Astra 离台面约 660mm，货物在 640 画幅里仅约 30px）
+#
+# 与 train_v3.yaml 的区别：
+#   * root 指向重新组装的数据集（原 mix_v3 + 真实俯拍照片 + 现场几何合成）
+#   * 加强尺度/平移增强，让模型适应小目标与位置抖动
+#   * erase 调高：现场台面杂物多，抑制「靠背景纹理」的伪特征
+#
+# imgsz 说明：
+#   640  —— 与当前部署的 ONNX/TRT 引擎形状一致，改完无需重建引擎（首选）
+#   960+ —— 网络输入里货物像素翻倍、更接近模型原有舒适区，但必须重新导出 ONNX
+#           并在 Jetson 上用 trtexec 重建引擎，推理耗时约 2~4 倍
+root: "/home/xxxffyy/工创/工创yolo/data/mix_overhead"
+detection_classes: ["goods"]
+model: "yolov8n"
+imgsz: 640
+epochs: 60
+batch: 16
+patience: 20
+optimizer: "AdamW"
+lr0: 0.0005           # 微调：比从头训练低一档
+lrf: 0.01
+warmup_epochs: 2.0
+freeze: 0
+amp: false            # 关掉 AMP 自检（该自检需访问 GitHub 下载 yolo26n.pt）
+aug:
+  hsv_h: 0.04
+  hsv_s: 0.5
+  hsv_v: 0.4
+  fliplr: 0.5
+  flipud: 0.5         # 俯拍视角下上下翻转也合理（现场摆放无方向性）
+  degrees: 180.0      # 俯拍下货物朝向完全随机，允许大角度旋转
+  translate: 0.15
+  scale: 0.5
+  mosaic: 0.8         # 小目标靠 mosaic 提升「小物体 + 多物体同框」的样本量
+  close_mosaic: 12
+  mixup: 0.0
+  copy_paste: 0.0
+  erase: 0.35
+  cos_lr: true
+  workers: 8
+acceptance:
+  detect_map50: 0.80

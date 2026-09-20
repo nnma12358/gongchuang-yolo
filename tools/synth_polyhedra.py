@@ -501,8 +501,26 @@ def main():
     ap.add_argument("--colors", nargs="*", default=list(COLORS.keys()))
     ap.add_argument("--preview", type=int, default=8, help="抽样拼图张数")
     ap.add_argument("--no-attributes", action="store_true", help="不生成属性分类小图")
+    # 现场几何覆盖：默认仍是设计值（cam_height 320），实测现场顶置 Astra 离台面约 660mm，
+    # 40mm 货物在 1280 宽渲染图里只有约 67px（letterbox 到 640 后约 33px，与现场一致）。
+    # 不改默认值以保证既有数据的可复现性。
+    ap.add_argument("--cam-height", type=float, default=None,
+                    help="相机光心到托盘面高度 mm（覆盖 REAL，现场实测约 660）")
+    ap.add_argument("--hfov", type=float, default=None, help="水平视场角（覆盖 REAL）")
+    ap.add_argument("--tray-mm", type=float, default=None, help="托盘边长 mm（覆盖 REAL）")
+    ap.add_argument("--pitch", type=float, default=None, help="俯仰角，90=垂直向下（覆盖 REAL）")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
+
+    # 现场几何覆盖（不传则保持设计默认值）
+    if args.cam_height is not None:
+        REAL["cam_height"] = float(args.cam_height)
+    if args.hfov is not None:
+        REAL["hfov_deg"] = float(args.hfov)
+    if args.tray_mm is not None:
+        REAL["tray_mm"] = float(args.tray_mm)
+    if args.pitch is not None:
+        REAL["pitch_deg"] = float(args.pitch)
 
     rng = random.Random(args.seed)
     np.random.seed(args.seed)
