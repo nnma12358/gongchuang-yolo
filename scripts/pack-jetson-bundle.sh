@@ -371,8 +371,14 @@ for f in glob.glob(os.path.join(root, "deploy/jetson/Dockerfile*")) + [os.path.j
             bad.append("%s:%d heredoc 需 BuildKit" % (os.path.basename(f), i))
         if re.search(r'COPY\s+--(chmod|link|parents)', line):
             bad.append("%s:%d COPY --chmod/--link 需 BuildKit" % (os.path.basename(f), i))
+# ③ apt 必须非交互（否则 tzdata 等 debconf 提示会让构建卡死）
+for f in glob.glob(os.path.join(root, "deploy/jetson/Dockerfile*")):
+    t = open(f, encoding="utf-8").read()
+    if "apt-get install" in t and "DEBIAN_FRONTEND" not in t:
+        bad.append("%s 有 apt-get install 但没有 DEBIAN_FRONTEND（构建会卡在 tzdata 交互提示）"
+                   % os.path.basename(f))
 if bad:
-    print("  ❌ Dockerfile 与老解析器不兼容：")
+    print("  ❌ Dockerfile 与老解析器不兼容 / 构建会卡住：")
     for b in bad:
         print("     -", b)
     sys.exit(1)

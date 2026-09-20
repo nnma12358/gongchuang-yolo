@@ -17,6 +17,10 @@
 ARG BASE_IMAGE=nvcr.io/nvidia/l4t-base:r32.7.1
 FROM ${BASE_IMAGE}
 
+# 非交互安装：不加这行，apt 会在 tzdata 等处弹 debconf 交互界面，构建就卡住了
+ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+
 # ---- 系统依赖：Python3 / OpenCV(JetPack 自带 4.1.1) / Pillow / numpy ----
 # 国内网络：先切阿里云 apt 镜像（L4T 基础镜像默认走 archive.ubuntu.com，国内常超时）
 RUN set -e; \
