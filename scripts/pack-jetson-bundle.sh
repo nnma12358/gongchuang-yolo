@@ -124,9 +124,18 @@ BRIDGE_PORT=8120
 # 最省事：bash scripts/adopt-existing-ros2.sh [现场容器名]   ← 自动探测并回填下面几项
 ROS_IMAGE=wheeltec_ros2_astra:foxy    # 现场 ros2 容器用的镜像（本机已有，不联网拉取）
 ROS_DOMAIN_ID=95                      # ⚠ 必须与现场容器一致（不一致=互相看不见对方话题）
-RMW_IMPLEMENTATION=                   # 留空=随镜像默认；现场用 CycloneDDS 就填 rmw_cyclonedds_cpp
-CYCLONEDDS_URI=                       # 现场若设了 CycloneDDS 配置，adopt 脚本会导出并填 file:///app/cyclonedds.xml
-ROS_NETWORK_MODE=host                 # 现场容器是 host → host；否则填 container:<现场容器名>
+# ⚠ 下面两项留空时**不要写行尾注释**：docker-compose 会把 "# 注释" 当成值传给容器，
+#    曾导致 RMW_IMPLEMENTATION 变成注释文字、rclpy 直接启动失败
+# 现场用 CycloneDDS 就填 rmw_cyclonedds_cpp（留空=随镜像默认）
+RMW_IMPLEMENTATION=
+# 现场若设了 CycloneDDS 配置，adopt 脚本会导出并填 file:///app/cyclonedds.xml
+CYCLONEDDS_URI=
+ROS_NETWORK_MODE=host
+# 机械臂接口（与现场 wheeltec_arm_driver 对齐）：
+#   话题 arm_joint_command，类型 sensor_msgs/JointState，6 个关节角（rad）
+ARM_TOPIC=arm_joint_command
+ARM_MSG=joint_state
+ARM_SERVICE=
 
 # ---- 深度 / 2.5D 定位（可选）----
 DEPTH_URL=http://127.0.0.1:8123/depth.png

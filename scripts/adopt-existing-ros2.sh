@@ -118,7 +118,18 @@ img, dom, rmw, uri, cycl, net, lh = sys.argv[1:8]
 vals = {"ROS_IMAGE": img, "ROS_DOMAIN_ID": dom, "RMW_IMPLEMENTATION": rmw,
         "CYCLONEDDS_URI": uri, "CYCLONEDDS_FILE": cycl,
         "ROS_NETWORK_MODE": net, "ROS_LOCALHOST_ONLY": lh}
+import re as _re
 lines = open(".env", encoding="utf-8").read().splitlines()
+# 把「空值 + 行尾注释」拆成两行：docker-compose 会把注释当成值
+_fixed = []
+for _l in lines:
+    _m = _re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=(\s*)#\s*(.*)$', _l)
+    if _m:
+        _fixed.append('# ' + _m.group(3))
+        _fixed.append('%s=' % _m.group(1))
+    else:
+        _fixed.append(_l)
+lines = _fixed
 out, done = [], set()
 for line in lines:
     k = line.split("=", 1)[0].strip()

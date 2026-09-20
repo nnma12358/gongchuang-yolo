@@ -36,7 +36,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("ros2-bridge")
 
 PORT = int(os.environ.get("PORT", "8120"))
-ARM_TOPIC = os.environ.get("ARM_TOPIC", "/arm/pick_place")
+ARM_TOPIC = os.environ.get("ARM_TOPIC", "arm_joint_command")
+ARM_MSG = os.environ.get("ARM_MSG", "joint_state").lower()
 ARM_SERVICE = os.environ.get("ARM_SERVICE", "")
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "").rstrip("/")
 DRY_RUN = os.environ.get("ROS_DRY_RUN", "0") == "1"
@@ -56,12 +57,18 @@ def ros_init():
     global _pub, _node, STATE
     try:
         import rclpy
-        from std_msgs.msg import String
         rclpy.init(args=None)
         _node = rclpy.create_node("sort_gateway_bridge")
-        _pub = _node.create_publisher(String, ARM_TOPIC, 10)
+        if ARM_MSG == "joint_state":
+            from sensor_msgs.msg import JointState
+            _pub = _node.create_publisher(JointState, ARM_TOPIC, 10)
+            logger.info("ROS2 就绪：发布 {0}（sensor_msgs/JointState，现场驱动订阅的就是这个）"
+                        .format(ARM_TOPIC))
+        else:
+            from std_msgs.msg import String
+            _pub = _node.create_publisher(String, ARM_TOPIC, 10)
+            logger.info("ROS2 就绪：发布 {0}（std_msgs/String，自定义 JSON 模式）".format(ARM_TOPIC))
         STATE["ros_ready"] = True
-        logger.info("ROS2 就绪：发布话题 {0}".format(ARM_TOPIC))
         threading.Thread(target=rclpy.spin, args=(_node,), daemon=True).start()
     except Exception as e:
         logger.warning("ROS2 初始化失败（{0}）：将以 dry-run 方式运行".format(e))
@@ -101,13 +108,32 @@ def build_command(payload):
             "z_release": place.get("z_release"),
             "joint6_open": JOINT6_OPEN,
         },
+        "joints": payload.get("joints"),
+        "joint_names": payload.get("joint_names"),
         "source": "gateway",
         "ts": time.strftime("%H:%M:%S"),
     }
 
 
+def publish_joint_state(joints, names=None):
+    """按现场机械臂驱动的真实接口下发关节角。
+
+    现场源码 wheeltec_arm_driver/src/driver_node.cpp:78 订阅的是：
+        create_subscription<sensor_msgs::msg::JointState>("arm_joint_command", 100, ...)
+    所以这里必须发 sensor_msgs/JointState，而不是自定义 JSON。
+    """
+    from sensor_msgs.msg import JointState
+    msg = JointState()
+    msg.header.stamp = _node.get_clock().now().to_msg()
+    msg.name = list(names or ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"])
+    msg.position = [float(v) for v in joints]
+    _pub.publish(msg)
+    logger.info("已发布 %s: %s ← %s", ARM_TOPIC, msg.name, [round(v, 4) for v in msg.position])
+    return {"ok": True, "mode": "joint_state"}
+
+
 def send_to_arm(cmd):
-    """下发指令：话题 / 服务 / dry-run"""
+    """下发指令：关节角(JointState) / 服务 / JSON 话题 / dry-run"""
     if DRY_RUN or not STATE["ros_ready"]:
         logger.info("[dry-run] 抓取 {0} → 放置 {1} 号盒 | pick=({0})".format(
             cmd["seq"], cmd["place"]["bin"]))
@@ -124,6 +150,16 @@ def send_to_arm(cmd):
             while not fut.done() and time.time() - t0 < 30:
                 time.sleep(0.05)
             return {"ok": True, "mode": "service"}
+        # 现场接口优先：请求里带了 joints（6 个关节角）→ 直接发 JointState
+        joints = cmd.get("joints")
+        if ARM_MSG == "joint_state" and joints:
+            res = publish_joint_state(joints, cmd.get("joint_names"))
+            logger.info("  #{0} {1} → {2} 号盒".format(cmd["seq"], cmd["name"], cmd["place"]["bin"]))
+            return res
+        if ARM_MSG == "joint_state" and not joints:
+            return {"ok": False, "mode": "joint_state",
+                    "error": "现场机械臂需要 6 个关节角（joints=[j1..j6]，单位 rad）才能动；"
+                             "当前指令只有笛卡尔目标，需要先做逆解（MoveIt 或 ColorIkResult）"}
         from std_msgs.msg import String
         _pub.publish(String(data=json.dumps(cmd, ensure_ascii=False)))
         logger.info("已发布 {0}: #{1} {2} → {3} 号盒".format(

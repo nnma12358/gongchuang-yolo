@@ -223,19 +223,23 @@ services:
     # host：与现场容器同处宿主网络（最常用）；
     # 若现场容器不是 host 网络，用 scripts/adopt-existing-ros2.sh 改成 container:<现场容器名>
     network_mode: ${ROS_NETWORK_MODE:-host}
+    # 现场镜像里的 OpenCV 是 CUDA 版（缺 libcublas.so.10 就 import 失败），
+    # 用 nvidia runtime 让容器像现场容器一样拿到宿主 CUDA 库（GPU 设备节点也一并获得）
+    runtime: nvidia
     environment:
       - TZ=Asia/Shanghai
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-95}
-      - ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}
-      # 留空 = 用现场镜像自带的 RMW（必须与现场容器一致，否则互相发现不了；
-      #        现场若用 CycloneDDS，adopt 脚本会自动填成 rmw_cyclonedds_cpp）
-      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-}
+      - ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-1}   # 与现场一致（他们只走 loopback）
+      # 必须与现场容器一致（他们的镜像自带 rmw_cyclonedds_cpp，这里显式写死更稳；
+      # 注意：.env 里空值后面不要写行尾注释，docker-compose 会把注释当成值）
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
       - CYCLONEDDS_URI=${CYCLONEDDS_URI:-}
       - ROS_DISTRO=${ROS_DISTRO:-foxy}
       # 桥接参数
       - PORT=${BRIDGE_PORT:-8120}
-      - ARM_TOPIC=${ARM_TOPIC:-/arm/pick_place}
-      - ARM_SERVICE=${ARM_SERVICE:-}
+      - ARM_TOPIC=${ARM_TOPIC:-arm_joint_command}   # 现场 wheeltec_arm_driver 订阅的真实话题
+      - ARM_MSG=${ARM_MSG:-joint_state}             # sensor_msgs/JointState（现场要这个）
+      - ARM_SERVICE=${ARM_SERVICE:-}                 # 现场不用服务，留空即可
       - GATEWAY_URL=${GATEWAY_URL:-http://127.0.0.1}
       - ROS_DRY_RUN=${ROS_DRY_RUN:-0}
       - JOINT6_CLOSED=${JOINT6_CLOSED:-0.20}
@@ -243,8 +247,8 @@ services:
       - DEFAULT_PICK_Z=${DEFAULT_PICK_Z:-20.0}
       # 深度/彩色 HTTP 节点（ROSTopic → HTTP，供视觉容器 DEPTH_URL/CAMERA_URL 使用）
       - DEPTH_HTTP_PORT=${DEPTH_HTTP_PORT:-8123}
-      - COLOR_TOPIC=${COLOR_TOPIC:-/overhead_camera/color/image_raw}
-      - DEPTH_TOPIC=${DEPTH_TOPIC:-/overhead_camera/depth/image_raw}
+      - COLOR_TOPIC=${COLOR_TOPIC:-/camera/color/image_raw}   # 与现场 dry_run_config.json 一致
+      - DEPTH_TOPIC=${DEPTH_TOPIC:-/camera/depth/image_raw}   # 同上
       - RELIABLE_QOS=${RELIABLE_QOS:-1}
     volumes:
       - ./deploy/jetson/ros_bridge_ros2.py:/app/ros_bridge_ros2.py:ro
@@ -253,12 +257,10 @@ services:
       # 现场 ROS2 工作空间（按实际路径改；不存在时 compose 会自动建空目录）
       - ${ROS2_WS:-./.ros2_ws}:/root/ws
     working_dir: /root/ws
-    command: >
-      bash -lc "python3 -c 'import fastapi' 2>/dev/null ||
-                python3 -m pip install --quiet --disable-pip-version-check
-                -i https://mirrors.aliyun.com/pypi/simple/ 'fastapi<0.100' 'uvicorn<0.24' || true;
-      python3 /app/depth_http_node.py &
-      exec python3 /app/ros_bridge_ros2.py"
+    # 一条命令起两个节点：深度/彩色 HTTP 服务（后台）+ ROS2 桥接（前台）
+    # 注意：不要用 `command: >` 多行折叠 —— 续行缩进大于首行时 YAML 会保留换行，
+    #       结果 shell 把续行参数当成独立命令（踩过：bash: line 2: -i: command not found）
+    command: ["bash", "-lc", "python3 /app/depth_http_node.py & exec python3 /app/ros_bridge_ros2.py"]
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
