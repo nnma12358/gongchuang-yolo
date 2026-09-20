@@ -20,6 +20,9 @@ FROM ${BASE_IMAGE}
 # 非交互安装：不加这行，apt 会在 tzdata 等处弹 debconf 交互界面，构建就卡住了
 ARG DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
+# 必须设 UTF-8 locale：容器默认是 POSIX/ASCII，pip 读带中文注释的
+# requirements.txt 会抛 UnicodeDecodeError 直接中断构建
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 # ---- 系统依赖：Python3 / OpenCV(JetPack 自带 4.1.1) / Pillow / numpy ----
 # 国内网络：先切阿里云 apt 镜像（L4T 基础镜像默认走 archive.ubuntu.com，国内常超时）
@@ -44,7 +47,14 @@ RUN python3 -m pip install --no-cache-dir --upgrade \
         -i https://mirrors.aliyun.com/pypi/simple/ "pip<22" "setuptools<60" wheel \
     && rm -rf /root/.cache/pip/*
 
+
 # ---- Python 依赖（固定为兼容 Python 3.6 的版本，见 requirements.txt 注释） ----
+# numpy 锁死 1.19.2：pip 上 1.19.5 及更新的 aarch64 轮子是按 ARMv8.2 编的，
+# 在 Jetson Nano(Tegra X1, ARMv8.0) 上会 "Illegal instruction" 直接崩。
+# 1.19.2 实测可用，且满足 onnxruntime 的依赖要求。
+RUN pip3 install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ \
+        "numpy==1.19.2" && rm -rf /root/.cache/pip/*
+
 COPY deploy/jetson/requirements.txt /app/requirements.txt
 RUN pip3 install --no-cache-dir \
         -i https://mirrors.aliyun.com/pypi/simple/ \
@@ -52,7 +62,7 @@ RUN pip3 install --no-cache-dir \
     && rm -rf /root/.cache/pip/*
 
 # ---- 网关脚本 + 公共模块 + 前端 SPA 产物 + 机器人侧客户端脚本 + 检测模型 ----
-COPY server/catalog.py server/detect_core.py server/gateway.py /app/
+COPY server/catalog.py server/detect_core.py server/gateway.py server/pose.py /app/
 COPY scripts/ /app/scripts/
 COPY build/ /app/build/
 COPY models/ /app/models/

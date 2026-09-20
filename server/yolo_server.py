@@ -151,6 +151,9 @@ def apply_dnn_backend(net):
     所以 Nano 上不用装 TensorRT/pycuda 也能先用上 GPU。
     """
     import cv2
+    if not hasattr(cv2, "dnn"):        # apt 的 OpenCV 3.2 没有 dnn 模块
+        logger.info("当前 OpenCV(%s) 无 dnn 模块 → 请用 ENGINE=ort", cv2.__version__)
+        return "none"
     if DNN_BACKEND == "cpu":
         net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
         net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
@@ -166,6 +169,43 @@ def apply_dnn_backend(net):
     net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
     net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
     return "cpu"
+
+
+
+def blob_nchw(bgr):
+    """letterbox 后的 BGR uint8 → NCHW float32 RGB。
+
+    等价于 cv2.dnn.blobFromImage(blob, 1/255, (IMGSZ, IMGSZ), swapRB=True)，
+    但**不依赖 cv2.dnn** —— Jetson 上 apt 的 OpenCV 3.2 没有 dnn 模块。
+    """
+    x = bgr[:, :, ::-1].astype(np.float32) * (1.0 / 255.0)
+    return np.ascontiguousarray(x.transpose(2, 0, 1)[None])
+
+
+def nms_numpy(boxes, scores, iou_thres):
+    """纯 numpy NMS（OpenCV <3.3 没有 cv2.dnn.NMSBoxes）"""
+    if not boxes:
+        return []
+    b = np.asarray(boxes, dtype=np.float32)
+    sc = np.asarray(scores, dtype=np.float32)
+    x1, y1 = b[:, 0], b[:, 1]
+    x2, y2 = b[:, 0] + b[:, 2], b[:, 1] + b[:, 3]
+    areas = (x2 - x1) * (y2 - y1)
+    order = sc.argsort()[::-1]
+    keep = []
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        rest = order[1:]
+        xx1 = np.maximum(x1[i], x1[rest]); yy1 = np.maximum(y1[i], y1[rest])
+        xx2 = np.minimum(x2[i], x2[rest]); yy2 = np.minimum(y2[i], y2[rest])
+        w = np.maximum(0.0, xx2 - xx1); h = np.maximum(0.0, yy2 - yy1)
+        inter = w * h
+        iou = inter / np.maximum(1e-9, areas[i] + areas[rest] - inter)
+        order = rest[iou <= iou_thres]
+    return keep
 
 
 def letterbox(bgr, size):
@@ -191,8 +231,8 @@ def detect(bgr):
     if STATE["engine"] == "tensorrt":
         import pycuda.driver as cuda
         t = STATE["trt"]
-        x = cv2.dnn.blobFromImage(blob, 1 / 255.0, (IMGSZ, IMGSZ), swapRB=True)
-        np.copyto(t["io"]["inputs"][0]["host"], np.ascontiguousarray(x).ravel())
+        x = blob_nchw(blob)
+        np.copyto(t["io"]["inputs"][0]["host"], x.ravel())
         cuda.memcpy_htod_async(t["io"]["inputs"][0]["dev"], t["io"]["inputs"][0]["host"], t["stream"])
         t["context"].execute_async_v2(bindings=t["bindings"], stream_handle=t["stream"].handle)
         for o in t["io"]["outputs"]:
@@ -202,12 +242,10 @@ def detect(bgr):
     elif STATE["engine"] == "onnxruntime":
         sess = _ORT["session"]
         inp = sess.get_inputs()[0].name
-        x = cv2.dnn.blobFromImage(blob, 1 / 255.0, (IMGSZ, IMGSZ), swapRB=True)
-        preds = sess.run(None, {inp: x})[0]
+        preds = sess.run(None, {inp: blob_nchw(blob)})[0]
     else:
         net = STATE["net"]
-        x = cv2.dnn.blobFromImage(blob, 1 / 255.0, (IMGSZ, IMGSZ), swapRB=True)
-        net.setInput(x)
+        net.setInput(blob_nchw(blob))
         preds = net.forward()
 
     p = np.asarray(preds)
@@ -229,8 +267,7 @@ def detect(bgr):
 
     out = []
     if boxes:
-        idx = cv2.dnn.NMSBoxes(boxes, confs, CONF_THRES, IOU_THRES)
-        for i in (idx.flatten() if idx is not None and len(idx) else []):
+        for i in nms_numpy(boxes, confs, IOU_THRES):
             x, y, w, h = boxes[i]
             x1 = (x - dx) / scale
             y1 = (y - dy) / scale

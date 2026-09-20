@@ -182,7 +182,8 @@ def analyze(bgr, conf_min=0.45, min_area_ratio=0.002, stain_th=0.05, defect_th=0
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=3)
 
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 兼容 OpenCV 3.x/4.x：3.x 返回 (image, contours, hierarchy)，4.x 返回 (contours, hierarchy)
+    contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
     min_area = float(min_area_ratio) * w0 * h0
     detections = []
 

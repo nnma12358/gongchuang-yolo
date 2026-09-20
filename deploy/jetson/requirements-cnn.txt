@@ -1,6 +1,5 @@
-# Jetson · CNN 属性识别容器（Python 3.6）
-# 与小 CNN（TinyNet）ONNX 配套；opencv/numpy 走 apt
-
+# Jetson attribute-CNN container (Python 3.6 / JetPack l4t-base)
+# numpy + opencv are installed by the Dockerfile (see requirements-yolo.txt notes)
 fastapi==0.68.2
 uvicorn==0.15.0
 pydantic==1.9.2

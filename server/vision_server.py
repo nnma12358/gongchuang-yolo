@@ -365,10 +365,10 @@ async def detect_upload(file: UploadFile = File(...)):
     if img is None:
         raise HTTPException(400, "无法解析图片")
     t0 = time.time()
-    dets, qr_text, size = detect_core.analyze(
-        img, conf_min=CONF_MIN, min_area_ratio=MIN_AREA_RATIO,
-        stain_th=STAIN_TH, defect_th=DEFECT_TH)
-    return {"engine": STATS["engine"], "detections": dets, "qr_text": qr_text,
+    # 与实时帧走同一条链路：yolo 检测 + cnn 属性（失败自动回退经典引擎）
+    dets, engine_used = run_detection(img)
+    qr_text, size = "", (img.shape[1], img.shape[0])
+    return {"engine": engine_used, "detections": dets, "qr_text": qr_text,
             "size": list(size), "elapsed_ms": round((time.time() - t0) * 1000, 1),
             "message": "识别到 {0} 件货物".format(len(dets)) if dets else "未识别到货物"}
 
@@ -381,9 +381,8 @@ def marks_for_frame(frame, idx, sync=False):
         return cached["detections"]
     if not sync:
         return cached.get("detections") or []
-    dets, _qr, _size = detect_core.analyze(
-        frame, conf_min=CONF_MIN, min_area_ratio=MIN_AREA_RATIO,
-        stain_th=STAIN_TH, defect_th=DEFECT_TH)
+    dets, _engine = run_detection(frame)      # 与实时帧走同一条链路（yolo 三层 / 经典回退）
+    _qr = ""
     with _marks_lock:
         _latest_marks.update({"ts": time.time(), "detections": dets,
                               "frame_index": idx, "size": [frame.shape[1], frame.shape[0]]})

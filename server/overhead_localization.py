@@ -260,7 +260,8 @@ class OverheadLocalizer(object):
         k = np.ones((3, 3), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=2)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # 兼容 OpenCV 3.x/4.x：3.x 返回 (image, contours, hierarchy)，4.x 返回 (contours, hierarchy)
+        contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
         out = []
         for c in contours:
             area = cv2.contourArea(c)

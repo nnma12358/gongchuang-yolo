@@ -1,7 +1,8 @@
-# Jetson · YOLO 目标检测容器（Python 3.6）
-# opencv / numpy 由基础镜像 apt 提供（python3-opencv 自带 DNN，可加载 ONNX）
-# 可选 onnxruntime：ENGINE=ort 时启用（aarch64 轮子按需自行安装）
-
+# Jetson YOLO detection container (Python 3.6 / JetPack l4t-base)
+# NOTE: numpy + opencv are installed by the Dockerfile, NOT here:
+#   - numpy: apt python3-numpy is too old for the opencv wheel -> pip numpy==1.19.5 (py3.6 last)
+#   - opencv: bionic apt python3-opencv is 3.2, which CANNOT parse ONNX
+#             (cv2.dnn.readNetFromONNX needs >= 3.3) -> pip opencv-python-headless 4.5.4
 fastapi==0.68.2
 uvicorn==0.15.0
 pydantic==1.9.2

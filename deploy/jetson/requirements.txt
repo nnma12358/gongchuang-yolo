@@ -1,12 +1,5 @@
-# Jetson Nano (JetPack 4.6.1 / Python 3.6) 兼容依赖
-# ------------------------------------------------------------------
-# 关键约束（踩过的坑，勿随意升级）：
-#   · pydantic 1.10+ 要求 Python ≥3.7 → py3.6 上会 “No matching distribution”
-#     故固定 1.9.2（FastAPI 0.68 要求 >=1.6.2,<2.0 且 1.9.2 支持 py3.6）
-#   · typing-extensions 4.2+ / requests 2.28+ / uvicorn 0.16+ 均已放弃 py3.6
-#   · opencv / numpy / Pillow 由基础镜像 apt 提供（python3-opencv/python3-numpy/python3-pil）
-#     —— 不要用 pip 装 Pillow：aarch64+py3.6 无 wheel，会触发源码编译
-
+# Jetson gateway container (Python 3.6 / JetPack l4t-base)
+# numpy + opencv are installed by the Dockerfile (see requirements-yolo.txt notes)
 fastapi==0.68.2
 uvicorn==0.15.0
 pydantic==1.9.2
@@ -14,3 +7,4 @@ starlette==0.14.2
 python-multipart==0.0.5
 requests==2.27.1
 typing-extensions==4.1.1
+aiofiles==0.8.0

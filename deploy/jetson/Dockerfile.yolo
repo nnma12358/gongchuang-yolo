@@ -21,6 +21,9 @@ FROM ${BASE_IMAGE}
 # 非交互安装：不加这行，apt 会在 tzdata 等处弹 debconf 交互界面，构建就卡住了
 ARG DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
+# 必须设 UTF-8 locale：容器默认是 POSIX/ASCII，pip 读带中文注释的
+# requirements.txt 会抛 UnicodeDecodeError 直接中断构建
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 RUN set -e; \
     if [ -f /etc/apt/sources.list ]; then \
@@ -42,9 +45,24 @@ RUN python3 -m pip install --no-cache-dir --upgrade \
         -i https://mirrors.aliyun.com/pypi/simple/ "pip<22" "setuptools<60" wheel \
     && rm -rf /root/.cache/pip/*
 
+
+# numpy 锁死 1.19.2：pip 上 1.19.5 及更新的 aarch64 轮子是按 ARMv8.2 编的，
+# 在 Jetson Nano(Tegra X1, ARMv8.0) 上会 "Illegal instruction" 直接崩。
+# 1.19.2 实测可用，且满足 onnxruntime 的依赖要求。
+RUN pip3 install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ \
+        "numpy==1.19.2" && rm -rf /root/.cache/pip/*
+
 COPY deploy/jetson/requirements-yolo.txt /app/requirements.txt
 RUN pip3 install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ \
         -r /app/requirements.txt && rm -rf /root/.cache/pip/*
+
+# ONNX 推理用 onnxruntime：
+#   · apt 的 OpenCV 3.2 没有 dnn 模块（readNetFromONNX 需 >=3.3），pip 的 opencv 轮子
+#     在 Tegra X1 上 SIGILL 用不了 —— 所以图像编解码用 apt 的 cv2 3.2，推理交给 ORT；
+#   · onnxruntime 的 aarch64 轮子在这块板子上实测可用（检测前向 ~750ms/帧，CPU）；
+#   · --no-deps：ORT 声明需要 numpy>=1.19.5，但那个版本会 SIGILL，我们锁 1.19.2。
+RUN pip3 install --no-cache-dir --no-deps -i https://mirrors.aliyun.com/pypi/simple/ \
+        "onnxruntime==1.9.0" && rm -rf /root/.cache/pip/*
 
 # 仅检测服务（模型通过 /app/models 挂载进来，便于换模型不重建镜像）
 COPY server/yolo_server.py /app/
@@ -56,8 +74,9 @@ ENV CLASSES_JSON=/app/models/detect/classes.json
 ENV IMGSZ=640
 ENV CONF_THRES=0.35
 ENV IOU_THRES=0.45
-# opencv | ort（ort 需自行安装 onnxruntime）
-ENV ENGINE=opencv
+# ort=ONNX Runtime（本镜像已装，用它做 ONNX 推理）；
+# opencv=OpenCV DNN（需 OpenCV>=3.3，本镜像的 apt 版是 3.2，仅作兜底）
+ENV ENGINE=ort
 ENV OMP_NUM_THREADS=4
 ENV OPENBLAS_NUM_THREADS=4
 

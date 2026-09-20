@@ -377,6 +377,31 @@ for f in glob.glob(os.path.join(root, "deploy/jetson/Dockerfile*")):
     if "apt-get install" in t and "DEBIAN_FRONTEND" not in t:
         bad.append("%s 有 apt-get install 但没有 DEBIAN_FRONTEND（构建会卡在 tzdata 交互提示）"
                    % os.path.basename(f))
+# ④ bionic 的 apt python3-opencv 是 3.2，不支持 ONNX → 必须另外用 pip 装新版
+for f in glob.glob(os.path.join(root, "deploy/jetson/Dockerfile*")):
+    t = open(f, encoding="utf-8").read()
+    if "python3-opencv" in t and "opencv-python-headless" not in t:
+        bad.append("%s 用了 apt 的 python3-opencv(3.2, 不支持 ONNX) 却没装 pip 版 opencv-python-headless"
+                   % os.path.basename(f))
+# ⑤ requirements 里不能有非 ASCII：容器 locale 是 POSIX/ASCII 时 pip 读文件直接 UnicodeDecodeError
+for f in glob.glob(os.path.join(root, "deploy/jetson/requirements*.txt")):
+    raw = open(f, "rb").read()
+    if any(b > 127 for b in raw):
+        bad.append("%s 含非 ASCII 字符（容器内 pip 会 UnicodeDecodeError 中断构建）"
+                   % os.path.basename(f))
+# ⑥ Jetson 依赖必须按实测锁定：numpy 1.19.5+ 与 pip 的 opencv 轮子在 Tegra X1 上会 SIGILL
+for f in glob.glob(os.path.join(root, "deploy/jetson/Dockerfile*")):
+    t = open(f, encoding="utf-8").read()
+    base = os.path.basename(f)
+    if "opencv-python-headless" in t:
+        bad.append("%s 装了 pip 版 opencv：其 aarch64 轮子在 Tegra X1 上 SIGILL，"
+                   "请用 apt 的 python3-opencv 做编解码" % base)
+    if "pip3 install" in t and "requirements" in t and "numpy==" not in t:
+        bad.append("%s 装了 pip 但没钉 numpy 版本：不钉会装到 1.19.5+ 而 SIGILL" % base)
+    if base in ("Dockerfile.yolo", "Dockerfile.cnn") and "onnxruntime==" not in t:
+        bad.append("%s 缺 onnxruntime（apt 的 OpenCV 3.2 没有 dnn 模块，ONNX 推理只能靠 ORT）" % base)
+    if "numpy==1.19.2" not in t and "numpy==" in t:
+        bad.append("%s 的 numpy 版本不是实测可用的 1.19.2" % base)
 if bad:
     print("  ❌ Dockerfile 与老解析器不兼容 / 构建会卡住：")
     for b in bad:

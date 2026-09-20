@@ -46,7 +46,8 @@ services:
                                           #   现场确实漏小目标时再试 960，但那是未验证配置）
       - CONF_THRES=${YOLO_CONF:-0.35}
       - IOU_THRES=${YOLO_IOU:-0.45}
-      - ENGINE=${YOLO_ENGINE:-opencv}     # opencv | ort
+      - ENGINE=${YOLO_ENGINE:-ort}        # ort=ONNX Runtime（本镜像已装，Tegra X1 实测可用）
+                                          # opencv=OpenCV DNN（apt 的 3.2 无 dnn 模块，用不了）
       - OMP_NUM_THREADS=4
       - OPENBLAS_NUM_THREADS=4
     volumes:
@@ -79,7 +80,7 @@ services:
       - TASKS=${CNN_TASKS:-color,shape,stain}
       - IMG_SIZE=96
       - CROP_MARGIN=0.12
-      - ENGINE=${CNN_ENGINE:-opencv}
+      - ENGINE=${CNN_ENGINE:-ort}         # 同上：apt OpenCV 3.2 无 dnn，必须走 ORT
       - OMP_NUM_THREADS=2
       - OPENBLAS_NUM_THREADS=2
     volumes:
@@ -174,7 +175,7 @@ services:
       - AUTO_CONF_MIN=${AUTO_CONF_MIN:-0.6}
       - AUTO_SINGLE_ITEM=${AUTO_SINGLE_ITEM:-1}   # 一次一件（赛项）
       - AUTO_DRY_RUN=${AUTO_DRY_RUN:-1}           # 1=不实际驱动机械臂（联调）
-      - DETECT_ENGINE=${DETECT_ENGINE:-classic}
+      - DETECT_ENGINE=${DETECT_ENGINE:-yolo}   # 网关侧同样走三层链路
       - MODEL_PATH=${MODEL_PATH:-/app/models/detect/goods_yolov8n_640_fp32.onnx}
     volumes:
       - sort-gateway-data:/app/data

@@ -15,6 +15,7 @@ ARG ROS_IMAGE=wheeltec_ros2_astra:foxy
 FROM ${ROS_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai LANG=C.UTF-8 LC_ALL=C.UTF-8
 # 说明：不加行尾注释 —— Jetson 上的经典 Dockerfile 解析器会把 "ENV X=Y # 注释" 里的 # 当第二个 name=value
 
 # 国内网络：apt 换阿里云（只在需要装 pip 时才用得到）
