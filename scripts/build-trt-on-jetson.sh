@@ -159,7 +159,7 @@ echo "MODEL_PATH=/app/models/detect/$(basename "$ENG_FP16")"
 [ -n "$ENG_INT8" ] && echo "# 若实测 INT8 更快且精度可接受，可换成：MODEL_PATH=/app/models/detect/$(basename "$ENG_INT8")"
 echo
 echo "  ⚠ 容器里跑 TensorRT 需要宿主机的 TRT 运行时与 Python 绑定，用叠加文件启动："
-echo "     docker compose -f docker-compose.jetson.yml -f docker-compose.jetson-trt.yml up -d sort-yolo"
+echo "     docker-compose -f docker-compose.jetson.yml -f docker-compose.jetson-trt.yml up -d sort-yolo"
 echo "     缺 pycuda 时：sudo pip3 install pycuda   （宿主机装一次即可，容器直接挂进去）"
 echo
 echo "  对比基线（不进 TRT 时的两条路，都不用装任何东西）："

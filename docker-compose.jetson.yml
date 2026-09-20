@@ -121,7 +121,7 @@ services:
       - STAIN_DARK_RATIO=${STAIN_DARK_RATIO:-0.05}
       - DEFECT_DARK_RATIO=${DEFECT_DARK_RATIO:-0.14}
       # 相机源：默认直连 /dev/video0；也可指向 ros2 容器的 MJPEG（Astra 彩色）
-      - CAMERA_URL=${CAMERA_URL:-}
+      # （CAMERA_URL 已在上面定义：默认直连 /dev/video0，也可指向 ros2 容器的 MJPEG）
       # 深度来源（ros2 容器的 16-bit PNG）与逐像素桌面参考（2.5D 定位软件标定产物）
       - DEPTH_URL=${DEPTH_URL:-http://127.0.0.1:8123/depth.png}
       - TABLE_REF_DIR=/app/calibration

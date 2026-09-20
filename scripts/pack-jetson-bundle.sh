@@ -89,7 +89,7 @@ YOLO_IOU=0.45
 # ---- Jetson 推理加速（三条路径，自动降级，不会崩）----
 # ① TensorRT FP16（最快）：先在设备上 bash scripts/build-trt-on-jetson.sh 构建引擎，
 #    再 bash scripts/gen-trt-override.sh 生成叠加文件，然后：
-#      docker compose -f docker-compose.jetson.yml -f docker-compose.jetson-trt.yml up -d sort-yolo
+#      docker-compose -f docker-compose.jetson.yml -f docker-compose.jetson-trt.yml up -d sort-yolo
 #    ⚠ Jetson Nano 的 Maxwell GPU 没有 INT8 硬件 → 用 FP16，不要用 INT8
 # ② OpenCV CUDA FP16（零额外依赖，JetPack 自带 OpenCV 带 CUDA）：DNN_BACKEND=cuda
 # ③ OpenCV CPU（兜底）：DNN_BACKEND=cpu 或不设且无 CUDA
@@ -148,20 +148,27 @@ ls /dev/video*                                  # 确认相机设备存在（没
 tar -xzf sort-jetson-deploy-<版本>.tar.gz
 cd sort-jetson-deploy-<版本>
 cp .env.jetson .env          # 按现场改 .env（至少确认 CAMERA_SOURCE 与 AUTO_DRY_RUN）
+
+# 起服务前先体检（Jetson 上装的是 docker-compose v1，对重复项是硬报错）
+docker-compose -f docker-compose.jetson.yml config > /dev/null && echo "compose OK"
+python3 scripts/check-compose.py docker-compose.jetson.yml   # 同类问题提前查
 ```
+
+> 命令用 `docker-compose`（v1，JetPack 自带）；若你装了 v2 插件，`docker compose` 等价。
+> `docker-compose config` 里出现 "deploy key will be ignored" 的**警告是正常的**（CPU/内存限制只在 swarm 生效），不影响运行。
 
 ## 2. 构建 + 启动
 
 ```bash
 # 只装 4 个核心容器：网关(Python+前端) / 视觉 / YOLO 检测 / CNN 属性
-docker compose -f docker-compose.jetson.yml up -d --build \
+docker-compose -f docker-compose.jetson.yml up -d --build \
     sort-gateway sort-vision sort-yolo sort-cnn
 
 # 需要 ROS 2 桥 + 深度节点（Astra 相机）时再加：
-docker compose -f docker-compose.jetson.yml --profile ros up -d
+docker-compose -f docker-compose.jetson.yml --profile ros up -d
 
 # 有 USB 相机时用这个叠加文件（直接挂 /dev/video0）：
-docker compose -f docker-compose.jetson.yml -f docker-compose.jetson-devices.yml up -d --build
+docker-compose -f docker-compose.jetson.yml -f docker-compose.jetson-devices.yml up -d --build
 ```
 
 首次构建约 15~30 分钟（Nano 上编译 numpy/opencv 绑定较慢），之后重建只走缓存。
@@ -214,7 +221,7 @@ Nano 的瓶颈几乎全在检测前向。三条路径**自动降级**，`/health
 
 ```bash
 cp 新的 ONNX models/detect/goods_yolov8n_640_fp32.onnx
-docker compose -f docker-compose.jetson.yml restart sort-yolo sort-vision
+docker-compose -f docker-compose.jetson.yml restart sort-yolo sort-vision
 ```
 
 ## 6. 目录说明
@@ -261,6 +268,11 @@ echo "=== [4/5] 生成清单与校验和 ==="
   echo "目录树(2 层):"
   ( cd "$STAGE" && find . -maxdepth 2 -type d | sort )
 } > "$STAGE/MANIFEST.txt"
+
+echo "=== [4.4/5] 校验：compose 对 docker-compose v1 是否合法 ==="
+"${PY:-python3}" scripts/check-compose.py \
+    docker-compose.jetson.yml docker-compose.jetson-devices.yml || {
+  echo "  ⚠ compose 有问题（Jetson 上装的是 v1，会直接拒绝启动）"; exit 1; }
 
 echo "=== [4.5/5] 校验：构建所需文件是否齐全 ==="
 "${PY:-python3}" - "$STAGE" <<'PYEOF'

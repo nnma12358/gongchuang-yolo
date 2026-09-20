@@ -13,7 +13,7 @@
 #   bash scripts/gen-trt-override.sh --engine models/detect/goods_yolov8n_640_fp16.engine
 #
 # 之后启动：
-#   docker compose -f docker-compose.jetson.yml -f docker-compose.jetson-trt.yml up -d sort-yolo
+#   docker-compose -f docker-compose.jetson.yml -f docker-compose.jetson-trt.yml up -d sort-yolo
 # ============================================================
 set -u
 ENGINE="/app/models/detect/goods_yolov8n_640_fp16.engine"
@@ -46,7 +46,7 @@ PYCUDA_PY="$(python3 -c 'import pycuda,os;print(os.path.dirname(pycuda.__file__)
   echo "# ============================================================"
   echo "# 由 scripts/gen-trt-override.sh 自动生成（$(date '+%F %T')）"
   echo "# 作用：让 sort-yolo 容器用宿主机的 TensorRT 跑 .engine"
-  echo "# 启动：docker compose -f docker-compose.jetson.yml -f docker-compose.jetson-trt.yml up -d sort-yolo"
+  echo "# 启动：docker-compose -f docker-compose.jetson.yml -f docker-compose.jetson-trt.yml up -d sort-yolo"
   echo "# ============================================================"
   echo "services:"
   echo "  sort-yolo:"
@@ -70,7 +70,7 @@ PYCUDA_PY="$(python3 -c 'import pycuda,os;print(os.path.dirname(pycuda.__file__)
 
 echo
 echo "✅ 已生成 $OUT"
-echo "   启动：docker compose -f docker-compose.jetson.yml -f $OUT up -d sort-yolo"
+echo "   启动：docker-compose -f docker-compose.jetson.yml -f $OUT up -d sort-yolo"
 echo "   自检：curl -s http://localhost:8101/health   # engine 应为 tensorrt，dnn_backend 为 cuda_fp16/cpu"
 if [ -z "$TRT_PY" ] || [ -z "$PYCUDA_PY" ]; then
   echo
