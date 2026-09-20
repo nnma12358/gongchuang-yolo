@@ -42,15 +42,19 @@ COPY server/catalog.py server/detect_core.py server/vision_server.py /app/
 COPY models/ /app/models/
 
 ENV PORT=8100
-ENV CAMERA_SOURCE=auto          # auto | synthetic | index | url
+# auto | synthetic | index | url
+ENV CAMERA_SOURCE=auto
 ENV CAMERA_INDEX=0
 ENV CAMERA_URL=
 ENV CAMERA_WIDTH=1280
 ENV CAMERA_HEIGHT=720
-ENV DETECT_ENGINE=classic       # classic(颜色+形状+污渍+二维码) | onnx(自训练模型)
-ENV MODEL_PATH=/app/models/yolov8n.onnx
-ENV VISION_FPS=10               # 采集/识别循环频率
-ENV STREAM_FPS=8                # 可选 MJPEG 推流频率
+# classic(颜色+形状+污渍+二维码) | onnx(自训练模型)
+ENV DETECT_ENGINE=classic
+ENV MODEL_PATH=/app/models/detect/goods_yolov8n_640_fp32.onnx
+# 采集/识别循环频率
+ENV VISION_FPS=10
+# 可选 MJPEG 推流频率
+ENV STREAM_FPS=8
 ENV CONF_MIN=0.45
 ENV STAIN_DARK_RATIO=0.05
 ENV DEFECT_DARK_RATIO=0.14

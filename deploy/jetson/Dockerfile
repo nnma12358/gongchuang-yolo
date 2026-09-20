@@ -52,9 +52,9 @@ COPY models/ /app/models/
 
 ENV STATIC_DIR=/app/build
 ENV DATA_DIR=/app/data
-ENV MODEL_PATH=/app/models/yolov8n.onnx
+ENV MODEL_PATH=/app/models/detect/goods_yolov8n_640_fp32.onnx
 # classic = 颜色+形状+污渍+二维码（纯 OpenCV，无需模型）
-# onnx    = 使用自训练 YOLO 模型（models/ 下放 best.onnx 并改 MODEL_PATH）
+# onnx    = 使用自训练检测模型（models/detect/ 下放 ONNX，见 models/README.md）
 ENV DETECT_ENGINE=classic
 # 一件货物分拣完成后，分拣信息在屏显示的最短保持时间（秒）
 # 期间网关拒绝下一件分拣上报 —— 对应赛项“显示后再分拣下一件，否则不计分”
@@ -64,11 +64,16 @@ ENV VISION_URL=http://127.0.0.1:8100
 # 机器人执行器（ROS 桥接）地址；留空则不驱动机械臂，仅显示与记录
 ENV ROBOT_URL=
 # ---- 自动分拣循环 ----
-ENV AUTO_INTERVAL=0.6            # 轮询视觉容器间隔(秒)
-ENV AUTO_CONFIRM_FRAMES=4        # 连续 N 帧同类才登记（防误检）
-ENV AUTO_CONF_MIN=0.6            # 置信度下限
-ENV AUTO_SINGLE_ITEM=1           # 一次一件（赛项）
-ENV AUTO_DRY_RUN=1               # 1=不实际驱动机械臂（联调）；现场置 0
+# 轮询视觉容器间隔(秒)
+ENV AUTO_INTERVAL=0.6
+# 连续 N 帧同类才登记（防误检）
+ENV AUTO_CONFIRM_FRAMES=4
+# 置信度下限
+ENV AUTO_CONF_MIN=0.6
+# 一次一件（赛项）
+ENV AUTO_SINGLE_ITEM=1
+# 1=不实际驱动机械臂（联调）；现场置 0
+ENV AUTO_DRY_RUN=1
 ENV PORT=80
 
 EXPOSE 80

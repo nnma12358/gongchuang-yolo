@@ -269,6 +269,37 @@ echo "=== [4/5] 生成清单与校验和 ==="
   ( cd "$STAGE" && find . -maxdepth 2 -type d | sort )
 } > "$STAGE/MANIFEST.txt"
 
+echo "=== [4.3/5] 校验：Dockerfile 对 Jetson 老解析器是否合法 ==="
+"${PY:-python3}" - "$STAGE" <<'PYEOF'
+import glob, os, re, sys
+root = sys.argv[1]
+bad = []
+for f in glob.glob(os.path.join(root, "deploy/jetson/Dockerfile*")) + [os.path.join(root, "Dockerfile")]:
+    if not os.path.exists(f):
+        continue
+    txt = open(f, encoding="utf-8").read().splitlines()
+    for i, line in enumerate(txt, 1):
+        # ① ENV/LABEL 行尾注释：老解析器按 name=value 逐词解析 → "can't find = in \"#\""
+        if re.match(r'^\s*(ENV|LABEL)\s+.*\s+#', line):
+            bad.append("%s:%d ENV/LABEL 行尾注释（Jetson 老解析器会报 can't find = in \"#\"）" % (os.path.basename(f), i))
+        # ② BuildKit 专属语法
+        if re.match(r'^\s*RUN\s+--', line):
+            bad.append("%s:%d RUN --mount/--network 需 BuildKit" % (os.path.basename(f), i))
+        if re.match(r'^\s*#\s*syntax=', line):
+            bad.append("%s:%d # syntax= 指令需 BuildKit" % (os.path.basename(f), i))
+        if re.search(r'<<-?[A-Za-z_]+\s*$', line):
+            bad.append("%s:%d heredoc 需 BuildKit" % (os.path.basename(f), i))
+        if re.search(r'COPY\s+--(chmod|link|parents)', line):
+            bad.append("%s:%d COPY --chmod/--link 需 BuildKit" % (os.path.basename(f), i))
+if bad:
+    print("  ❌ Dockerfile 与老解析器不兼容：")
+    for b in bad:
+        print("     -", b)
+    sys.exit(1)
+print("  ✅ Dockerfile 兼容 Jetson 的经典解析器（无行尾注释 / 无 BuildKit 专属语法）")
+PYEOF
+[ $? -eq 0 ] || { echo "包不完整，已中止"; exit 1; }
+
 echo "=== [4.4/5] 校验：compose 对 docker-compose v1 是否合法 ==="
 "${PY:-python3}" scripts/check-compose.py \
     docker-compose.jetson.yml docker-compose.jetson-devices.yml || {

@@ -8,7 +8,7 @@
 # 模型来源：工创yolo 项目
 #   python train_detection.py --config config/sorting_competition.yaml --epochs 150
 #   python export_models.py   --config config/sorting_competition.yaml --imgsz 960
-#   产物 best.onnx → 本仓库 models/yolo/best.onnx（compose 只读挂载 /app/models）
+#   产物 → 本仓库 models/detect/goods_yolov8n_640_fp32.onnx（compose 只读挂载 /app/models）
 #
 # 构建（项目根目录）：
 #   docker build -f deploy/jetson/Dockerfile.yolo -t sort-yolo:jetson .
@@ -43,12 +43,14 @@ RUN pip3 install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ \
 COPY server/yolo_server.py /app/
 
 ENV PORT=8101
-ENV MODEL_PATH=/app/models/yolo/best.onnx
-ENV CLASSES_JSON=/app/models/yolo/classes.json
-ENV IMGSZ=960                 # 与训练 imgsz 保持一致（40mm 小目标建议 960）
+ENV MODEL_PATH=/app/models/detect/goods_yolov8n_640_fp32.onnx
+ENV CLASSES_JSON=/app/models/detect/classes.json
+# 必须与训练 imgsz 一致（本模型 640；现场确实漏小目标再试 960，属未验证配置）
+ENV IMGSZ=640
 ENV CONF_THRES=0.35
 ENV IOU_THRES=0.45
-ENV ENGINE=opencv             # opencv | ort（ort 需自行安装 onnxruntime）
+# opencv | ort（ort 需自行安装 onnxruntime）
+ENV ENGINE=opencv
 ENV OMP_NUM_THREADS=4
 ENV OPENBLAS_NUM_THREADS=4
 
