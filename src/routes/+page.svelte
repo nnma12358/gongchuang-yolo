@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
   import jsQR from 'jsqr';
+  import CameraPane from '$lib/components/CameraPane.svelte';
 
   // ===================== 显示 / 轮次状态 =====================
   let display = $state({
@@ -27,7 +28,15 @@
   let autoMaxItems = $state(0);          // 0 = 不限件数
   let autoDryRun = $state(true);
   let autoRequireAck = $state(false);
-  let camSrc = $state('local');          // local(本机摄像头) | vision(Jetson 视觉容器画面)
+  // ---- 多路相机（前端同时显示两路画面）----
+  let cameras = $state([]);              // 网关返回的相机清单（含真实可用状态）
+  let paneSrc = $state({ A: 'marked', B: 'cam2' });
+  let paneRefs = { A: null, B: null };    // 相机窗格实例引用（取帧/全屏用）
+  let detectPane = $state('A');           // AI 识别作用于哪一路画面
+  let camTarget = $state('');             // 「连接设置」里手填的 Jetson 地址
+  let camTargetMsg = $state('');
+  let camTargetBusy = $state(false);
+  let camSrc = $state('marked');          // 当前主画面源（兼容既有逻辑）
   let frameTick = $state(0);
   let visionOk = $state(false);
   let marks = $state({ detections: [], qr_text: '', ts: 0, error: null, last_event: null });
@@ -139,7 +148,7 @@
     try { await jpost('/api/auto/stop'); showToast('自动分拣已停止'); await refreshAuto(); }
     catch (e) { showToast(e.message, 'err'); } finally { autoBusy = ''; }
   }
-  let pollTimer, tickTimer, clockTimer, autoTimer, marksTimer, frameTimer, healthTimer;
+  let pollTimer, tickTimer, clockTimer, autoTimer, marksTimer, frameTimer, healthTimer, camTimer;
   onMount(() => {
     refreshHealth();
     refreshDisplay(); refreshStatus(); refreshTasks();
@@ -149,6 +158,8 @@
     marksTimer = setInterval(() => { refreshMarks(); refreshVision(); }, 1500);
     healthTimer = setInterval(refreshHealth, 5000);
     frameTimer = setInterval(() => (frameTick = Date.now()), 1200);   // 视觉画面刷新节拍
+    loadCameras();                                                     // 多路相机清单（首屏）
+    camTimer = setInterval(() => loadCameras(), 6000);                  // 定期刷新可用状态
     tickTimer = setInterval(() => (nowTick = Date.now() / 1000), 100);
     const upd = () => (clock.t = new Date().toLocaleTimeString('zh-CN', { hour12: false }));
     upd(); clockTimer = setInterval(upd, 1000);
@@ -156,19 +167,14 @@
   onDestroy(() => {
     clearInterval(pollTimer); clearInterval(tickTimer); clearInterval(clockTimer); clearTimeout(toastTimer);
     clearInterval(autoTimer); clearInterval(marksTimer); clearInterval(frameTimer); clearInterval(healthTimer);
-    if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
+    clearInterval(camTimer);
     stopQrScanning();
   });
 
-  // ===================== 摄像头 / 识别 =====================
-  let cameraActive = $state(false);
-  let cameraStream = null;
-  let videoEl = $state(undefined);
+  // ===================== 多路相机 / 识别 =====================
   let canvasEl = $state(undefined);
-  let snapshotEl;
   let snapshotUrl = $state(null);
-  let mjpegUrl = $state('');
-  let camMode = $state('browser');
+  let panesReady = $state(false);
   let detections = $state([]);
   let detecting = $state(false);
   let detectInfo = $state('');
@@ -180,43 +186,61 @@
   let itemText = $state('');
   let itemQr = $state('');
 
-  async function openCamera() {
-    if (cameraStream) return;
+  /** 拉取网关的相机清单（真实可用状态）；不可达时清单为空，界面显示未连接而非假画面 */
+  async function loadCameras(force = false) {
     try {
-      cameraStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false
-      });
-      cameraActive = true; camMode = 'browser';
-      if (videoEl) videoEl.srcObject = cameraStream;
-    } catch (e) { showToast('无法访问摄像头：' + (e.message || e), 'err'); }
-  }
-  function closeCamera() {
-    if (cameraStream) { cameraStream.getTracks().forEach((t) => t.stop()); cameraStream = null; }
-    cameraActive = false; snapshotUrl = null; detections = [];
-  }
-  function applyMjpeg() {
-    if (!/^https?:\/\//.test(mjpegUrl)) { showToast('请输入有效 MJPEG 流地址', 'err'); return; }
-    if (cameraStream) { cameraStream.getTracks().forEach((t) => t.stop()); cameraStream = null; }
-    camMode = 'mjpeg'; cameraActive = true; showToast('已接入 MJPEG 流');
-  }
-  function capture() {
-    if (camMode === 'browser' && videoEl?.videoWidth) {
-      snapshotEl = snapshotEl || document.createElement('canvas');
-      snapshotEl.width = videoEl.videoWidth; snapshotEl.height = videoEl.videoHeight;
-      snapshotEl.getContext('2d').drawImage(videoEl, 0, 0);
-      snapshotUrl = snapshotEl.toDataURL('image/jpeg', 0.88);
-      return true;
+      const d = await api('/api/cameras' + (force ? '?refresh=1' : ''));
+      cameras = d.cameras || [];
+      // 默认布局：优先「识别标记」+「第二路」；没有 cam2 时退回「实时画面」
+      const ids = cameras.map((c) => c.id);
+      const pick = (want, fallback) => (ids.includes(want) ? want : (ids.includes(fallback) ? fallback : ids[0] || ''));
+      paneSrc = {
+        A: ids.includes(paneSrc.A) ? paneSrc.A : pick('marked', 'main'),
+        B: ids.includes(paneSrc.B) ? paneSrc.B : pick('cam2', 'main')
+      };
+      camSrc = paneSrc.A;
+      panesReady = true;
+    } catch (e) {
+      cameras = [];
+      panesReady = false;
     }
-    showToast('请先打开本机摄像头再抓拍', 'warn');
-    return false;
   }
-  async function runDetect() {
-    if (!snapshotUrl && !capture()) return;
+
+  /** 「连接设置」：运行期指定/重测 Jetson 地址（网段随热点变化，无需改 .env 重启） */
+  async function checkTarget(url = '', clear = false) {
+    camTargetBusy = true; camTargetMsg = '';
+    try {
+      const d = clear
+        ? await jpost('/api/deploy', { clear: true })
+        : url
+          ? await jpost('/api/deploy', { url })
+          : await api('/api/deploy?refresh=1');
+      camTargetMsg = d.base ? `已连接：${d.base}（来源：${d.source || '—'}）` : (d.hint || d.last_error || '未找到服务');
+      await Promise.all([refreshHealth(), loadCameras(true)]);
+    } catch (e) {
+      camTargetMsg = '检测失败：' + e.message;
+    } finally { camTargetBusy = false; }
+  }
+
+  /** 抓拍某一路（远程相机向网关要单帧，本机摄像头走 canvas） */
+  async function snapPane(pane) {
+    const ref = paneRefs[pane];
+    if (!ref) return null;
+    const f = await ref.grabFrame();
+    if (!f) { showToast('该画面暂无可用帧', 'warn'); return null; }
+    if (snapshotUrl) URL.revokeObjectURL(snapshotUrl);
+    snapshotUrl = f.url;
+    return f;
+  }
+
+  /** AI 识别：默认作用于选中的那一路画面 */
+  async function runDetect(pane = detectPane) {
+    const f = await snapPane(pane);
+    if (!f) return;
     detecting = true; detectInfo = 'AI 识别中…';
     try {
-      const blob = await (await fetch(snapshotUrl)).blob();
       const form = new FormData();
-      form.append('file', blob, 'snapshot.jpg');
+      form.append('file', f.blob, 'snapshot.jpg');
       const d = await api('/api/detect', { method: 'POST', body: form });
       detections = d.detections || [];
       detectEngine = d.engine; qrText = d.qr_text || '';
@@ -395,7 +419,6 @@
   const demoQrUrl = (id) => `https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent('SORT-TASK:' + id)}&bgcolor=ffffff&color=0f172a&margin=6`;
 
   $effect(() => {
-    if (videoEl && cameraStream && cameraActive) videoEl.srcObject = cameraStream;
     if (qrVideoEl && qrStream && qrOpen) qrVideoEl.srcObject = qrStream;
   });
 </script>
@@ -478,68 +501,67 @@
     <section class="col">
       <div class="card">
         <div class="card-head">
-          <h2>📷 摄像头画面 · AI 识别</h2>
-          <div class="src-switch">
-            <button class="src-btn {camSrc === 'local' ? 'active' : ''}" onclick={() => (camSrc = 'local')}>本机摄像头</button>
-            <button class="src-btn {camSrc === 'vision' ? 'active' : ''}" onclick={() => (camSrc = 'vision')}>
-              视觉画面(Jetson)<i class="src-dot {visionOk ? 'ok' : 'err'}"></i>
-            </button>
-          </div>
-          <div class="cam-tools">
-            <input class="mjpeg-input" placeholder="MJPEG 流 http://ip:8080/video" bind:value={mjpegUrl} />
-            <button class="btn ghost sm" onclick={applyMjpeg}>接入流</button>
-          </div>
+          <h2>📷 多路摄像头画面 · AI 识别</h2>
+          <span class="hint">
+            {#if !panesReady}未连接 Jetson 服务
+            {:else}{cameras.filter((c) => c.ready).length}/{cameras.length} 路可用{/if}
+          </span>
+          <button class="btn ghost sm" onclick={() => loadCameras(true)}>刷新画面源</button>
         </div>
-        <div class="cam-view">
-          {#if camSrc === 'vision'}
-            {#if visionOk}
-              <img src="/api/frame.jpg?draw=1&t={frameTick}" alt="视觉容器画面（含标记）" />
-              <span class="cam-label">● VISION</span>
-              <span class="snap-badge">识别标记已叠加</span>
-            {:else}
-              <div class="cam-holder">
-                <div class="cam-icon">🛰</div>
-                <p>未连接视觉容器</p>
-                <p class="sub">
-                  {deploy.vision_url ? `已配置 ${deploy.vision_url}，但不可达` : '请在 .env 配置 VISION_URL 指向 Jetson 视觉容器（:8100）'}
-                </p>
-                <p class="sub">画面与标记均来自实际服务，未连接时不展示模拟内容</p>
-              </div>
-            {/if}
-          {:else if cameraActive && camMode === 'browser'}
-            <video bind:this={videoEl} autoplay playsinline muted></video>
-          {:else if cameraActive && camMode === 'mjpeg'}
-            <img src={mjpegUrl} alt="MJPEG" />
-          {:else}
-            <div class="cam-holder">
-              <div class="cam-icon">📷</div>
-              <p>摄像头未开启</p>
-              <p class="sub">点击下方「打开摄像头」，或切到「视觉画面」查看 Jetson 端识别画面</p>
-            </div>
-          {/if}
-          {#if camSrc === 'local' && snapshotUrl}
-            <img class="snapshot" src={snapshotUrl} alt="抓拍" />
-            <canvas bind:this={canvasEl} class="overlay"></canvas>
-          {/if}
-          {#if camSrc === 'local'}<span class="cam-label">● LIVE</span>{/if}
+
+        <!-- 两路画面并排显示；每一路都能单独更换画面源 -->
+        <div class="cam-grid">
+          <CameraPane
+            title="画面 1"
+            bind:this={paneRefs.A}
+            bind:value={paneSrc.A}
+            {cameras}
+            oncapture={(f) => { snapshotUrl = f.url; detections = []; detectInfo = '已抓拍画面 1'; }}
+            showDetect={true}
+            {detecting}
+            ondetect={() => { detectPane = 'A'; runDetect('A'); }}
+          />
+          <CameraPane
+            title="画面 2"
+            bind:this={paneRefs.B}
+            bind:value={paneSrc.B}
+            {cameras}
+            oncapture={(f) => { snapshotUrl = f.url; detections = []; detectInfo = '已抓拍画面 2'; }}
+            showDetect={true}
+            {detecting}
+            ondetect={() => { detectPane = 'B'; runDetect('B'); }}
+          />
         </div>
+
         <div class="cam-actions">
-          {#if camSrc === 'local'}
-            <button class="btn primary" onclick={() => (cameraActive ? closeCamera() : openCamera())}>
-              {cameraActive ? '⏻ 关闭摄像头' : '📷 打开摄像头'}
-            </button>
-            <button class="btn" onclick={capture} disabled={!cameraActive}>📸 抓拍</button>
-            <button class="btn" onclick={runDetect} disabled={detecting}>{detecting ? '识别中…' : '🎯 AI 识别'}</button>
-            <button class="btn accent" onclick={registerTop} disabled={!detections.length}>✅ 识别结果登记</button>
-          {:else}
-            <span class="hint">
-              画面来自视觉容器（Jetson :8100），标记由识别引擎输出
-              {#if marks.ts}· 更新于 {new Date(marks.ts * 1000).toLocaleTimeString('zh-CN', { hour12: false })}{/if}
-              {#if marks.error}· <b class="warn-text">{marks.error}</b>{/if}
-            </span>
-          {/if}
+          <span class="hint">
+            AI 识别作用于「画面 {detectPane}」
+            {#if detectEngine}· 引擎 {detectEngine}{/if}
+            {#if marks.ts}· 标记更新于 {new Date(marks.ts * 1000).toLocaleTimeString('zh-CN', { hour12: false })}{/if}
+            {#if marks.error}· <b class="warn-text">{marks.error}</b>{/if}
+          </span>
           <span class="hint">{detectInfo}</span>
+          <button class="btn accent" onclick={registerTop} disabled={!detections.length}>✅ 识别结果登记</button>
         </div>
+
+        <!-- 连接设置：Nano 地址随所连热点变化，可在此直接重连，无需改配置重启 -->
+        <div class="cam-conn">
+          <span class="conn-title">连接设置</span>
+          <input class="mjpeg-input" placeholder="Jetson 服务地址" bind:value={camTarget} />
+          <button class="btn ghost sm" onclick={() => checkTarget(camTarget)} disabled={camTargetBusy}>
+            {camTargetBusy ? '连接中…' : '连接'}
+          </button>
+          <button class="btn ghost sm" onclick={() => checkTarget('', true)} disabled={camTargetBusy}>自动重连</button>
+          <span class="hint">{camTargetMsg || (deploy.gateway_url ? `当前 ${deploy.gateway_url}` : '未连接')}</span>
+        </div>
+
+        {#if snapshotUrl}
+          <div class="result-shot">
+            <img class="snapshot" src={snapshotUrl} alt="识别帧" />
+            <canvas bind:this={canvasEl} class="overlay"></canvas>
+            <span class="cam-label">识别帧 {detections.length} 件</span>
+          </div>
+        {/if}
 
         {#if marks.detections?.length || marks.qr_text}
           <div class="ai-result">
@@ -1015,6 +1037,19 @@
   .cam-label { position: absolute; top: 10px; left: 10px; font-size: .66rem; padding: 3px 10px; border-radius: 10px; background: rgba(255,255,255,.9); color: #dc2626; font-weight: 700; }
   .cam-actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
   .cam-actions .hint { margin-left: 0; }
+  /* 多路画面：并排两路；窄屏自动堆叠 */
+  .cam-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 900px) { .cam-grid { grid-template-columns: 1fr; } }
+  /* 连接设置：Nano 地址随所连热点变化，这里可直接重连，无需改配置重启 */
+  .cam-conn { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap;
+    padding-top: 8px; border-top: 1px dashed #e2e8f0; }
+  .conn-title { font-size: .72rem; font-weight: 700; color: #475569; }
+  .cam-conn .hint { margin-left: 0; }
+  /* 识别帧（含检测框叠加） */
+  .result-shot { position: relative; margin-top: 10px; border-radius: 10px; overflow: hidden;
+    border: 1px solid #cbd5e1; background: #0f172a; max-width: 520px; }
+  .result-shot img.snapshot { display: block; width: 100%; }
+  .result-shot .overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
 
   .ai-result { margin-top: 12px; border-top: 1px dashed #e2e8f0; padding-top: 10px; }
   .ai-head { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }

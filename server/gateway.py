@@ -24,10 +24,11 @@ from pathlib import Path
 import requests
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 import detect_core
+import cameras
 import pose
 from catalog import (COLORS, GOODS, GOODS_BY_ID, IMAGE_FORMATS, MARKS, SHAPES,
                      formats_for, generate_goods_images, goods_svg, match_goods)
@@ -452,7 +453,11 @@ async def health():
         vision = vision_get("/health", timeout=1.5).json()
     except Exception as e:
         vision = {"ok": False, "error": str(e)[:120]}
-    return {"ok": True, "vision": vision, "auto": AUTO["status"]}
+    # service/name 两个字段供 PC 端「自动发现 Jetson」识别身份：
+    # Nano 的 IP 随所连 WiFi 热点变化，PC 端需要能确认扫描到的就是本网关，而不是别的 HTTP 服务。
+    return {"ok": True, "service": "sort-gateway", "name": "智能分拣网关",
+            "port": int(os.environ.get("PORT", "80")),
+            "cameras": cameras.camera_ids(), "vision": vision, "auto": AUTO["status"]}
 
 
 @app.get("/api/status")
@@ -647,6 +652,54 @@ async def vision_health():
         return vision_get("/health", timeout=2.0).json()
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:120]}, status_code=503)
+
+
+# ---------- 多路相机（前端可同时显示多路画面） ----------
+@app.get("/api/cameras")
+async def cameras_list(refresh: int = 0):
+    """相机清单 + 真实可用状态（不可达就如实报，不合成画面）"""
+    cams = cameras.describe(force=bool(refresh))
+    ready = [c["id"] for c in cams if c["ready"]]
+    return {
+        "cameras": cams,
+        "ready": ready,
+        "count": len(cams),
+        "stats": cameras.stats(),
+        "default_pair": (ready + [c["id"] for c in cams])[:2],
+        "hint": "每路都可用 /api/cameras/<id>/stream.mjpg 直接作为 <img src> 显示",
+    }
+
+
+@app.get("/api/cameras/{cid}/frame.jpg")
+async def camera_frame(cid: str):
+    """单路单帧（抓拍/轮询用）"""
+    try:
+        data, ctype = cameras.snapshot(cid)
+    except KeyError:
+        raise HTTPException(404, "未知相机: {0}".format(cid))
+    except Exception as e:
+        raise HTTPException(503, "相机不可达（{0}）: {1}".format(cid, str(e)[:100]))
+    return Response(content=data, media_type=ctype,
+                    headers={"Cache-Control": "no-store, max-age=0"})
+
+
+@app.get("/api/cameras/{cid}/stream.mjpg")
+async def camera_stream(cid: str):
+    """单路 MJPEG 流 —— 长连接，前端 <img src> 直接显示。
+
+    没有原生 MJPEG 的源（深度图等）由 cameras 模块按帧率轮询单帧并封装 multipart，
+    前端因此对每一路都用同一套代码。
+    """
+    try:
+        gen, mtype, _remote = cameras.stream(cid)
+    except KeyError:
+        raise HTTPException(404, "未知相机: {0}".format(cid))
+    if gen is None:
+        raise HTTPException(503, "并发画面数已达上限（{0}），请先关闭其它画面".format(
+            cameras.stats()["max_streams"]))
+    return StreamingResponse(gen, media_type=mtype,
+                             headers={"Cache-Control": "no-store, max-age=0",
+                                      "X-Accel-Buffering": "no"})
 
 
 # ---------- 识别（手动，转发视觉容器） ----------

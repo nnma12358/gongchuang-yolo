@@ -211,6 +211,44 @@ python3 scripts/sort_client.py --gateway http://localhost --demo 5   # 走通显
                  "conf": 0.94, "qr": "SORT-TASK:T-260902"}]}
 ```
 
+## 8.1 多路相机（前端同时显示两路画面）
+
+前端「多路摄像头画面」卡片并排显示两路，每路都能单独换源；AI 识别作用于选中的那一路。
+
+| 相机 id | 默认来源 | 说明 |
+|---|---|---|
+| `main` | ROS 桥接 `/color.jpg`·`/color.mjpg` | 顶置 Astra 实时画面（无标记） |
+| `marked` | 视觉容器 `/frame.jpg`·`/stream.mjpg` | 顶置画面 + 检测框/中文标签 |
+| `depth` | ROS 桥接 `/depth_preview.jpg` | 深度伪彩（2.5D），**无原生流 → 由网关按帧率合成 MJPEG** |
+| `cam2` | `sort-cam2` 服务 `:8103` | 第二路相机（USB 相机 / 任意视频流；未接相机时退化为**标注清楚**的测试图） |
+
+网关接口（前端统一只认这一套，不必关心上游差异）：
+
+| 接口 | 说明 |
+|---|---|
+| `GET /api/cameras` | 相机清单 + **真实可用状态**（ready / 分辨率 / 时延 / 错误原因） |
+| `GET /api/cameras/<id>/frame.jpg` | 单帧（抓拍、送入 AI 识别） |
+| `GET /api/cameras/<id>/stream.mjpg` | MJPEG 流，前端 `<img src>` 直接显示 |
+
+要点：
+- **不可达就如实报不可达**，不合成画面冒充现场（cam2 无相机时的测试图在画面里明确标注 `TEST PATTERN`）
+- 并发流有上限（`CAM_MAX_STREAMS`，默认 6），保护 4GB 的 Nano
+- `sort-cam2` 复用视觉容器镜像并**只读挂载脚本**，改代码 `docker restart sort-cam2` 即生效，不需要重新 build
+- 第二路相机配置：`CAM2_SOURCE=auto|index|url|synthetic`、`CAM2_INDEX`、`CAM2_URL`（外部流）、`CAM2_NAME`（界面上显示的名字，例如"腕部相机"）
+
+## 8.2 连接设置（Nano 地址随所连热点变化）
+
+现场 Nano 的地址会随所连无线热点变化，因此**不写死地址**，PC 端按顺序解析：
+运行期覆盖 → `GATEWAY_URL`（推荐填 mDNS 主机名）→ `GATEWAY_CANDIDATES` → mDNS 主机名，
+命中后缓存 30s；探测失败立即失效重解析（换热点后刷新页面即可自动接上）。
+
+页面上的「连接设置」可以：
+- 手填地址后点「连接」——**只认这个地址，填错会如实报错**（不会悄悄连到别的地址）
+- 点「自动重连」——清除手填值，按候选列表重新找
+
+网关 `/health` 带 `service: sort-gateway` 标记，PC 端据此确认扫描/探测到的是本网关而不是别的 HTTP 服务。
+不提供网段扫描（既有侵入性又慢）；需要固定地址时用主机名或手填。
+
 ## 9. 本地联调（无 Jetson / 无相机）
 
 ```bash
@@ -224,3 +262,26 @@ curl -X POST localhost/api/auto/start -H 'Content-Type: application/json' \
 curl localhost/api/auto/status        # 观察自动分拣进度
 curl localhost/api/marks/log          # 标记输出历史
 ```
+
+### 只验多路相机（不需要设备、不需要真相机）
+
+```bash
+# 终端 1/2：模拟两路上游（桥接 + 视觉）
+python3 scripts/dev_mock_cameras.py --port 8192 --mode bridge
+python3 scripts/dev_mock_cameras.py --port 8194 --mode vision
+
+# 终端 3：真实的第二路相机服务（合成测试图，验证服务本身）
+CAM2_SOURCE=synthetic CAM2_PORT=8103 python3 deploy/jetson/cam2_node.py
+
+# 终端 4：网关（指向上面三个）
+cd server && PORT=8099 BRIDGE_URL=http://127.0.0.1:8192 VISION_URL=http://127.0.0.1:8194 \
+  CAM2_URL=http://127.0.0.1:8103 DATA_DIR=/tmp/gw_data STATIC_DIR=/tmp/none python3 gateway.py
+
+# 冒烟：单帧 + 每一路的 MJPEG 都应有帧（可把 --base 换成 PC 前端容器端口，验证代理层）
+python3 scripts/smoke_cameras.py --base http://127.0.0.1:8099 --seconds 4
+```
+
+注意：PC 前端容器代理 MJPEG 必须走 `gatewayStream()`（无超时）。用默认 6s 超时的
+`forward()` 转流会在 6 秒后掐断，表现为「画面看几秒就卡住」。用 `--seconds 12`
+跑一遍即可确认这条链路没退化。
+

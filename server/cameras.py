@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+智能分拣装置 —— 多路相机子系统（网关侧）
+=========================================
+现场可能同时存在多路画面，前端要能**同时**显示两路（或更多）：
+
+    main   顶置 Astra 彩色（ROS 桥接 :8123 /color.jpg·/color.mjpg）—— 分拣台实时画面
+    marked 顶置 · 识别标记（视觉容器 :8100 /frame.jpg·/stream.mjpg）—— 叠加框/中文标签
+    depth  深度伪彩（ROS 桥接 :8123 /depth_preview.jpg）—— 2.5D 用
+    cam2   第二路相机（sort-cam2 服务 :8103）—— 本机 USB 相机/腕部相机/任意 MJPEG
+
+设计要点：
+  · **统一接口**：每路都提供 /api/cameras/<id>/frame.jpg（单帧）与 /api/cameras/<id>/stream.mjpg（MJPEG）。
+    没有原生 MJPEG 的源（如深度图）由本模块按帧率轮询单帧并自行封装 multipart —— 前端只用一套代码。
+  · **以实际服务为准**：不可达就如实报 ready=false 与原因，绝不合成画面。
+  · **不缓存、不落盘**：全部流式转发，避免 Nano 上额外的内存/磁盘压力。
+  · **限制并发流**：每路流占一个线程，超过 MAX_STREAMS 主动拒绝，防止把 4GB 的 Nano 拖垮。
+"""
+import logging
+import os
+import threading
+import time
+
+import requests
+
+logger = logging.getLogger("sort-cameras")
+
+# ==================== 配置 ====================
+BRIDGE = os.environ.get("BRIDGE_URL", "http://127.0.0.1:8123").rstrip("/")
+VISION = os.environ.get("VISION_URL", "http://127.0.0.1:8100").rstrip("/")
+CAM2 = os.environ.get("CAM2_URL", "http://127.0.0.1:8103").rstrip("/")
+
+# 每路：id、显示名、单帧地址、MJPEG 地址（None 表示由本模块用单帧合成）、说明
+_REGISTRY = [
+    {
+        "id": "main",
+        "name": os.environ.get("CAM_MAIN_NAME", "顶置相机 · 实时画面"),
+        "snapshot": os.environ.get("CAM_MAIN_SNAPSHOT", BRIDGE + "/color.jpg"),
+        "stream": os.environ.get("CAM_MAIN_STREAM", BRIDGE + "/color.mjpg"),
+        "detail": "Astra 彩色（ROS 桥接直出，无标记）",
+    },
+    {
+        "id": "marked",
+        "name": os.environ.get("CAM_MARKED_NAME", "顶置相机 · 识别标记"),
+        "snapshot": os.environ.get("CAM_MARKED_SNAPSHOT", VISION + "/frame.jpg?draw=1"),
+        "stream": os.environ.get("CAM_MARKED_STREAM", VISION + "/stream.mjpg"),
+        "detail": "视觉容器输出，叠加检测框与中文标签",
+    },
+    {
+        "id": "depth",
+        "name": os.environ.get("CAM_DEPTH_NAME", "深度图 · 2.5D"),
+        "snapshot": os.environ.get("CAM_DEPTH_SNAPSHOT", BRIDGE + "/depth_preview.jpg"),
+        "stream": None,
+        "detail": "深度伪彩色，用于高度/凸起判断",
+    },
+    {
+        "id": "cam2",
+        "name": os.environ.get("CAM2_NAME", "第二路相机"),
+        "snapshot": os.environ.get("CAM2_SNAPSHOT", CAM2 + "/frame.jpg"),
+        "stream": os.environ.get("CAM2_STREAM", CAM2 + "/stream.mjpg"),
+        "detail": os.environ.get("CAM2_DETAIL", "sort-cam2 服务（USB 相机 / 外部流）"),
+    },
+]
+
+PROBE_TTL = float(os.environ.get("CAM_PROBE_TTL", "2.0"))     # 状态探测缓存秒
+PROBE_TIMEOUT = float(os.environ.get("CAM_PROBE_TIMEOUT", "0.8"))
+STREAM_FPS = float(os.environ.get("CAM_SYNTH_FPS", "8"))       # 合成 MJPEG 的帧率
+MAX_STREAMS = int(os.environ.get("CAM_MAX_STREAMS", "6"))
+
+_BY_ID = {c["id"]: c for c in _REGISTRY}
+_PROBE = {}                      # cid -> (ts, info)
+_PROBE_LOCK = threading.Lock()
+_STREAMS = {"n": 0}
+_STREAM_LOCK = threading.Lock()
+
+BOUNDARY = "sortframe"
+
+
+def camera_ids():
+    return [c["id"] for c in _REGISTRY]
+
+
+def get_camera(cid):
+    return _BY_ID.get(cid)
+
+
+def _jpeg_size(data):
+    """从 JPEG 字节里读出宽高（解析 SOF 段，不依赖 PIL）"""
+    i = 2
+    n = len(data)
+    while i + 9 < n:
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                      0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+            h = (data[i + 5] << 8) | data[i + 6]
+            w = (data[i + 7] << 8) | data[i + 8]
+            return int(w), int(h)
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        seg = (data[i + 2] << 8) | data[i + 3]
+        i += 2 + max(0, seg)
+    return None, None
+
+
+def probe(cid, force=False):
+    """探测某路是否可用（带缓存）：返回 {ready, size, latency_ms, detail/error}"""
+    cam = _BY_ID.get(cid)
+    if cam is None:
+        return {"id": cid, "ready": False, "error": "未知相机"}
+    now = time.time()
+    with _PROBE_LOCK:
+        hit = _PROBE.get(cid)
+        if hit and not force and now - hit[0] < PROBE_TTL:
+            return hit[1]
+    info = {"id": cid, "ready": False}
+    t0 = time.time()
+    try:
+        r = requests.get(cam["snapshot"], timeout=PROBE_TIMEOUT)
+        info["latency_ms"] = round((time.time() - t0) * 1000, 1)
+        if r.status_code == 200 and r.content[:2] == b"\xff\xd8":
+            w, h = _jpeg_size(r.content)
+            info.update({"ready": True, "size": [w, h], "bytes": len(r.content)})
+        else:
+            info["error"] = "HTTP {0}".format(r.status_code)
+    except Exception as e:
+        info["error"] = str(e)[:120]
+    with _PROBE_LOCK:
+        _PROBE[cid] = (time.time(), info)
+    return info
+
+
+def describe(force=False):
+    """给前端的相机清单（真实状态，不假装）"""
+    out = []
+    for cam in _REGISTRY:
+        st = probe(cam["id"], force=force)
+        out.append({
+            "id": cam["id"],
+            "name": cam["name"],
+            "detail": cam["detail"],
+            "has_stream": True,
+            "snapshot_url": "/api/cameras/{0}/frame.jpg".format(cam["id"]),
+            "stream_url": "/api/cameras/{0}/stream.mjpg".format(cam["id"]),
+            "ready": bool(st.get("ready")),
+            "size": st.get("size"),
+            "latency_ms": st.get("latency_ms"),
+            "error": st.get("error"),
+        })
+    return out
+
+
+# ==================== 单帧 ====================
+def snapshot(cid, timeout=3.0):
+    """取某路单帧 JPEG；失败抛异常由调用方转成 503"""
+    cam = _BY_ID.get(cid)
+    if cam is None:
+        raise KeyError(cid)
+    r = requests.get(cam["snapshot"], timeout=timeout)
+    if r.status_code != 200:
+        raise RuntimeError("上游 HTTP {0}".format(r.status_code))
+    ctype = r.headers.get("Content-Type", "image/jpeg")
+    return r.content, ctype
+
+
+# ==================== MJPEG ====================
+def _acquire_slot():
+    with _STREAM_LOCK:
+        if _STREAMS["n"] >= MAX_STREAMS:
+            return False
+        _STREAMS["n"] += 1
+        return True
+
+
+def _release_slot():
+    with _STREAM_LOCK:
+        _STREAMS["n"] = max(0, _STREAMS["n"] - 1)
+
+
+def _relay_remote(url, chunk=16384):
+    """原生 MJPEG：直接透传上游分片"""
+    r = requests.get(url, stream=True, timeout=(3.05, 10))
+    try:
+        if r.status_code != 200:
+            logger.warning("MJPEG 上游 HTTP %s: %s", r.status_code, url)
+            return
+        for data in r.iter_content(chunk_size=chunk):
+            if data:
+                yield data
+    finally:
+        r.close()
+
+
+def _synth_from_snapshot(url, fps=STREAM_FPS, timeout=2.0):
+    """没有原生 MJPEG 的源（深度图等）：按帧率轮询单帧，自行封装 multipart"""
+    period = 1.0 / max(0.5, float(fps))
+    head = ("--{0}\r\nContent-Type: image/jpeg\r\n").format(BOUNDARY).encode()
+    while True:
+        t0 = time.time()
+        try:
+            r = requests.get(url, timeout=timeout)
+            if r.status_code == 200 and r.content[:2] == b"\xff\xd8":
+                jpg = r.content
+                yield (head + b"Content-Length: " + str(len(jpg)).encode() +
+                       b"\r\n\r\n" + jpg + b"\r\n")
+        except Exception:
+            pass                      # 上游抖动不终止整条流，下一轮重试
+        dt = time.time() - t0
+        if dt < period:
+            time.sleep(period - dt)
+
+
+def stream(cid):
+    """返回 (generator, media_type, is_remote)；并发超限返回 (None, None, False)"""
+    cam = _BY_ID.get(cid)
+    if cam is None:
+        raise KeyError(cid)
+    if not _acquire_slot():
+        logger.warning("并发流已达上限 %s，拒绝 %s", MAX_STREAMS, cid)
+        return None, None, False
+    remote = cam.get("stream")
+    if remote:
+        gen = _relay_remote(remote)
+        mtype = "multipart/x-mixed-replace; boundary=--BoundaryString"
+        # 上游分片已含完整 multipart 帧（含自身 boundary），直接按原类型转发
+        mtype = "multipart/x-mixed-replace"
+    else:
+        gen = _synth_from_snapshot(cam["snapshot"])
+        mtype = "multipart/x-mixed-replace; boundary={0}".format(BOUNDARY)
+
+    def wrapped():
+        try:
+            for chunk in gen:
+                yield chunk
+        except Exception as e:                      # 客户端断开/上游挂掉都走这里
+            logger.info("流 %s 结束：%s", cid, str(e)[:80])
+        finally:
+            _release_slot()
+
+    return wrapped(), mtype, bool(remote)
+
+
+def stats():
+    with _STREAM_LOCK:
+        return {"active_streams": _STREAMS["n"], "max_streams": MAX_STREAMS}

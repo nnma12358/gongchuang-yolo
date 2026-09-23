@@ -161,6 +161,47 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # ---------------- 第二路相机（多画面显示用，可选） ----------------
+  # 复用视觉容器镜像（含 cv2 + fastapi），只挂一份脚本，**不新增基础镜像构建**；
+  # 脚本改动只需 docker restart sort-cam2，无需 build。
+  # 现场没接第二路相机时 CAM2_SOURCE 会自动退化为"测试图"（画面里明确标注 TEST PATTERN，
+  # 不会冒充真实画面），因此本服务可以一直开着。
+  sort-cam2:
+    build:
+      context: .
+      dockerfile: deploy/jetson/Dockerfile.vision
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-nvcr.io/nvidia/l4t-base:r32.7.1}
+    image: sort-vision:jetson
+    container_name: sort-cam2
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    command: ["python3", "/app/cam2_node.py"]
+    environment:
+      - TZ=Asia/Shanghai
+      - CAM2_PORT=8103
+      # auto = 先试 CAM2_URL → 再试 CAM2_INDEX → 最后测试图
+      - CAM2_SOURCE=${CAM2_SOURCE:-auto}
+      - CAM2_INDEX=${CAM2_INDEX:-0}
+      - CAM2_URL=${CAM2_URL_SRC:-}
+      - CAM2_WIDTH=${CAM2_WIDTH:-640}
+      - CAM2_HEIGHT=${CAM2_HEIGHT:-480}
+      - CAM2_FPS=${CAM2_FPS:-15}
+      - CAM2_JPEG_QUALITY=${CAM2_JPEG_QUALITY:-82}
+      - CAM2_NAME=${CAM2_NAME:-第二路相机}
+    volumes:
+      # 脚本只读挂载：改代码后 docker restart sort-cam2 即生效
+      - ./deploy/jetson/cam2_node.py:/app/cam2_node.py:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
   # ---------------- 网关容器（前端 + 规则 + 自动分拣） ----------------
   sort-gateway:
     build:
@@ -178,6 +219,15 @@ services:
       - PORT=80
       - DISPLAY_HOLD_SECONDS=${DISPLAY_HOLD_SECONDS:-3.0}
       - VISION_URL=http://127.0.0.1:8100
+      # ---- 多路相机（前端可同时显示两路画面）----
+      - BRIDGE_URL=http://127.0.0.1:8123          # 顶置 Astra 彩色/深度（ROS 桥接）
+      - CAM2_URL=http://127.0.0.1:8103            # 第二路相机（sort-cam2 服务）
+      - CAM_MAIN_NAME=${CAM_MAIN_NAME:-顶置相机 · 实时画面}
+      - CAM_MARKED_NAME=${CAM_MARKED_NAME:-顶置相机 · 识别标记}
+      - CAM_DEPTH_NAME=${CAM_DEPTH_NAME:-深度图 · 2.5D}
+      - CAM2_NAME=${CAM2_NAME:-第二路相机}
+      - CAM_MAX_STREAMS=${CAM_MAX_STREAMS:-6}     # 同时 MJPEG 流上限（保护 4GB 的 Nano）
+      - CAM_SYNTH_FPS=${CAM_SYNTH_FPS:-8}         # 无原生 MJPEG 的源（深度图）轮询帧率
       - ROBOT_URL=${ROBOT_URL:-http://127.0.0.1:8120}   # ROS2 桥接；置空=不驱动机械臂
       - CALIB_PATH=/app/data/calib.json           # 标定文件（scripts/calibrate.py 生成）
       - GRASP_ENABLED=${GRASP_ENABLED:-1}         # 是否解算抓取位姿
