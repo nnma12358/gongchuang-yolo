@@ -12,6 +12,7 @@
     python3 scripts/smoke_cameras.py --base http://127.0.0.1:8099 --seconds 4
 """
 import argparse
+import re
 import sys
 import time
 
@@ -41,6 +42,44 @@ def count_frames(url, seconds, chunk=8192):
     except Exception as e:
         return n, 'ERR {0}'.format(str(e)[:40])
     return n, 200
+
+
+def check_boundary(url, seconds=3.0, chunk=8192):
+    """校验 MJPEG 的 multipart 是否**能被浏览器解析**：
+
+    只看"有没有收到 JPEG 字节"是不够的 —— 实测踩过一次：网关中继时把上游
+    Content-Type 里的 boundary 丢了，字节照样在传（curl 数字节完全正常），
+    但浏览器解析不了 multipart，画面一直是破图。所以这里同时检查：
+      · 响应头 Content-Type 是否带 boundary=...
+      · 响应体开头是否是 --<boundary>
+    返回 (ok, 说明)
+    """
+    t0 = time.time()
+    try:
+        with requests.get(url, stream=True, timeout=(3.05, max(6.0, seconds))) as r:
+            if r.status_code != 200:
+                return False, 'HTTP {0}'.format(r.status_code)
+            ctype = r.headers.get('Content-Type', '')
+            m = re.search(r'boundary=("?)([^";]+)\1', ctype, re.I)
+            if not m:
+                return False, 'Content-Type 缺少 boundary（浏览器无法解析）：{0}'.format(ctype)
+            boundary = m.group(2).encode()
+            buf = b''
+            for data in r.iter_content(chunk_size=chunk):
+                if not data:
+                    continue
+                buf += data
+                if len(buf) > 64:
+                    break
+                if time.time() - t0 >= seconds:
+                    break
+            head = buf.lstrip(b'\r\n')
+            if not head.startswith(b'--' + boundary):
+                return False, '响应体首部不是 --{0}（实际: {1!r}）'.format(
+                    boundary.decode(), head[:24])
+            return True, 'Content-Type={0}，首部匹配'.format(ctype)
+    except Exception as e:
+        return False, str(e)[:60]
 
 
 def main():
@@ -74,6 +113,11 @@ def main():
         print('  [{0}] 流   {1}  {2:.0f}s 收到 {3} 帧 ({4})'.format(
             cid, 'OK' if ok_stream else '失败', args.seconds, n, code))
         if not ok_stream:
+            fails += 1
+        # 3) multipart 可解析性（浏览器能否显示，取决于 boundary）
+        ok_b, why = check_boundary(args.base + c['stream_url'])
+        print('  [{0}] 边界 {1}  {2}'.format(cid, 'OK' if ok_b else '失败', why))
+        if not ok_b:
             fails += 1
 
     print('\n结论：{0}'.format(

@@ -251,6 +251,7 @@ def stream(cid):
         return None, None, st.get("error") or "该路当前不可达"
     remote = cam.get("stream")
     upstream = None
+    mtype = None
     if remote:
         # 打开上游就先校验状态码：否则异常时已发出 200 响应头，
         # 客户端只会看到一个"空流"（既没有帧也没有错误），很难排查。
@@ -258,6 +259,13 @@ def stream(cid):
             upstream = _open_remote(remote, float(os.environ.get("CAM_STREAM_IDLE", "8")))
         except Exception as e:
             return None, None, str(e)[:100]
+        # **必须原样带上上游的 boundary**（例：multipart/x-mixed-replace; boundary=frame）。
+        # 丢了 boundary 时：字节其实一直在传，但浏览器无法解析 multipart，
+        # 表现为"状态栏显示在线、画面却是破图"，且只有 curl 数字节的测试是发现不了的。
+        mtype = upstream.headers.get("Content-Type") or \
+            "multipart/x-mixed-replace; boundary=frame"
+        if "boundary" not in mtype.lower():
+            mtype = mtype.rstrip("; ") + "; boundary=frame"
     if not _acquire_slot():
         logger.warning("并发流已达上限 %s，拒绝 %s", MAX_STREAMS, cid)
         if upstream is not None:
@@ -268,7 +276,6 @@ def stream(cid):
         return None, None, "并发画面数已达上限 {0}".format(MAX_STREAMS)
     if upstream is not None:
         gen = _relay_open(upstream, url=remote)
-        mtype = "multipart/x-mixed-replace"
     else:
         gen = _synth_from_snapshot(cam["snapshot"])
         mtype = "multipart/x-mixed-replace; boundary={0}".format(BOUNDARY)
