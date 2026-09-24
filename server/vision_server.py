@@ -27,7 +27,7 @@ import threading
 import time
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import detect_core
 from catalog import GOODS, MARKS, SHAPES, COLORS
@@ -562,7 +562,10 @@ async def stream_mjpg(draw: int = 1):
                        b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
             time.sleep(max(0.02, 1.0 / max(1.0, STREAM_FPS)))
 
-    return Response(content=gen(), media_type="multipart/x-mixed-replace; boundary={0}".format(boundary))
+    # MJPEG 是无限生成器，必须用 StreamingResponse
+    # （Response 会尝试 content.encode() -> 'generator' object has no attribute 'encode'，
+    #   表现为 /stream.mjpg 直接 500；此坑在桥接容器也踩过一次）
+    return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary={0}".format(boundary))
 
 
 @app.get("/api/meta")

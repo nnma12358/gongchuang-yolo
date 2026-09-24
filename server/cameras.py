@@ -181,33 +181,37 @@ def _release_slot():
         _STREAMS["n"] = max(0, _STREAMS["n"] - 1)
 
 
-def _relay_remote(url, chunk=16384, read_timeout=None):
-    """原生 MJPEG：直接透传上游分片。
+def _relay_open(r, url="", chunk=16384):
+    """中继一个**已经打开并校验过状态码**的上游响应。
 
-    现场实测的坑：上游（ROS 桥接）在**没有相机帧时不会关连接、也不吐数据**，
-    于是这里会一直挂着——浏览器那边表现为"画面永远转圈"，客户端读超时。
-    所以读超时（默认 CAM_STREAM_IDLE，8s）一到就结束这条流：前端 <img> 会触发
-    onerror 自动重连，页面能立刻给出反馈，而不是静默卡死。
+    现场实测的坑：上游（ROS 桥接/视觉容器）在异常时可能既不关连接也不吐数据，
+    会让这条流永远挂着——浏览器表现为"一直转圈"。所以读超时
+    （CAM_STREAM_IDLE，默认 8s）一到就结束这条流，前端 <img> 触发 onerror 自动重连。
     """
-    idle = read_timeout or float(os.environ.get("CAM_STREAM_IDLE", "8"))
-    r = None
     try:
-        r = requests.get(url, stream=True, timeout=(3.05, idle))
-        if r.status_code != 200:
-            logger.warning("MJPEG 上游 HTTP %s: %s", r.status_code, url)
-            return
         for data in r.iter_content(chunk_size=chunk):
             if data:
                 yield data
     except Exception as e:
-        # 上游静默/断开都走这里：正常结束这条流，让客户端重连
         logger.info("MJPEG 上游结束（%s）：%s", str(e)[:70], url)
     finally:
-        if r is not None:
-            try:
-                r.close()
-            except Exception:
-                pass
+        try:
+            r.close()
+        except Exception:
+            pass
+
+
+def _open_remote(url, idle):
+    """打开上游 MJPEG 并校验状态码；失败抛 RuntimeError（由调用方转成 503）"""
+    r = requests.get(url, stream=True, timeout=(3.05, idle))
+    if r.status_code != 200:
+        code = r.status_code
+        try:
+            r.close()
+        except Exception:
+            pass
+        raise RuntimeError("上游返回 HTTP {0}".format(code))
+    return r
 
 
 def _synth_from_snapshot(url, fps=STREAM_FPS, timeout=2.0):
@@ -245,12 +249,25 @@ def stream(cid):
     st = probe(cid)
     if not st.get("ready"):
         return None, None, st.get("error") or "该路当前不可达"
+    remote = cam.get("stream")
+    upstream = None
+    if remote:
+        # 打开上游就先校验状态码：否则异常时已发出 200 响应头，
+        # 客户端只会看到一个"空流"（既没有帧也没有错误），很难排查。
+        try:
+            upstream = _open_remote(remote, float(os.environ.get("CAM_STREAM_IDLE", "8")))
+        except Exception as e:
+            return None, None, str(e)[:100]
     if not _acquire_slot():
         logger.warning("并发流已达上限 %s，拒绝 %s", MAX_STREAMS, cid)
+        if upstream is not None:
+            try:
+                upstream.close()
+            except Exception:
+                pass
         return None, None, "并发画面数已达上限 {0}".format(MAX_STREAMS)
-    remote = cam.get("stream")
-    if remote:
-        gen = _relay_remote(remote)
+    if upstream is not None:
+        gen = _relay_open(upstream, url=remote)
         mtype = "multipart/x-mixed-replace"
     else:
         gen = _synth_from_snapshot(cam["snapshot"])
