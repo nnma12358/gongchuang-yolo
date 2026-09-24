@@ -19,6 +19,7 @@
 """
 import logging
 import os
+import queue
 import threading
 import time
 
@@ -67,6 +68,8 @@ PROBE_TTL = float(os.environ.get("CAM_PROBE_TTL", "2.0"))     # 状态探测缓�
 PROBE_TIMEOUT = float(os.environ.get("CAM_PROBE_TIMEOUT", "0.8"))
 STREAM_FPS = float(os.environ.get("CAM_SYNTH_FPS", "8"))       # 合成 MJPEG 的帧率
 MAX_STREAMS = int(os.environ.get("CAM_MAX_STREAMS", "6"))
+# 单条流最长存活秒数：即便断线检测失效，也能兜底释放槽位
+MAX_STREAM_S = float(os.environ.get("CAM_STREAM_MAX_S", "1800"))
 
 _BY_ID = {c["id"]: c for c in _REGISTRY}
 _PROBE = {}                      # cid -> (ts, info)
@@ -181,28 +184,12 @@ def _release_slot():
         _STREAMS["n"] = max(0, _STREAMS["n"] - 1)
 
 
-def _relay_open(r, url="", chunk=16384):
-    """中继一个**已经打开并校验过状态码**的上游响应。
-
-    现场实测的坑：上游（ROS 桥接/视觉容器）在异常时可能既不关连接也不吐数据，
-    会让这条流永远挂着——浏览器表现为"一直转圈"。所以读超时
-    （CAM_STREAM_IDLE，默认 8s）一到就结束这条流，前端 <img> 触发 onerror 自动重连。
-    """
-    try:
-        for data in r.iter_content(chunk_size=chunk):
-            if data:
-                yield data
-    except Exception as e:
-        logger.info("MJPEG 上游结束（%s）：%s", str(e)[:70], url)
-    finally:
-        try:
-            r.close()
-        except Exception:
-            pass
-
-
 def _open_remote(url, idle):
-    """打开上游 MJPEG 并校验状态码；失败抛 RuntimeError（由调用方转成 503）"""
+    """打开上游 MJPEG 并校验状态码；失败抛 RuntimeError（由调用方转成 503）。
+
+    先把连接开起来再决定要不要发响应头，这样上游异常时能给出明确的 503，
+    而不是先发 200 再送一个"空流"（客户端既看不到帧也看不到错误）。
+    """
     r = requests.get(url, stream=True, timeout=(3.05, idle))
     if r.status_code != 200:
         code = r.status_code
@@ -214,30 +201,106 @@ def _open_remote(url, idle):
     return r
 
 
-def _synth_from_snapshot(url, fps=STREAM_FPS, timeout=2.0):
-    """没有原生 MJPEG 的源（深度图等）：按帧率轮询单帧，自行封装 multipart"""
-    period = 1.0 / max(0.5, float(fps))
-    head = ("--{0}\r\nContent-Type: image/jpeg\r\n").format(BOUNDARY).encode()
-    while True:
-        t0 = time.time()
+class CameraStream(object):
+    """一条 MJPEG 流：后台线程读上游 → 队列 → 网关的异步生成器取走。
+
+    **为什么不用同步生成器直接 yield**（踩过的坑）：
+    Starlette 对同步生成器无法在客户端断开时中断线程（线程正阻塞在上游 read 上），
+    于是 finally 迟迟不执行、并发槽位不释放。现场实测：刷新几次页面后
+    6 个槽位全部被占用，之后**所有**画面都返回 503（表现为前端一片黑/破图），
+    而相机清单却仍显示"在线"。
+    改成"线程 + 队列 + 异步生成器轮询 is_disconnected"后，客户端一断开就释放。
+    """
+
+    def __init__(self, cid, upstream=None, snapshot=None, remote_url=None,
+                 idle=8.0, fps=None):
+        self.cid = cid
+        self.mtype = None
+        self._upstream = upstream
+        self._snapshot = snapshot
+        self._remote_url = remote_url or ""
+        self._idle = idle
+        self._fps = float(fps or STREAM_FPS)
+        self._q = queue.Queue(maxsize=6)
+        self._closed = False
+        self._close_lock = threading.Lock()
+        self._slot = True
+        self.deadline = time.time() + MAX_STREAM_S
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+        self._thread.start()
+
+    # ---- 读取线程 ----
+    def _offer(self, item):
+        while not self._closed:
+            try:
+                self._q.put(item, timeout=0.3)
+                return
+            except queue.Full:
+                continue
+
+    def _pump(self):
         try:
-            r = requests.get(url, timeout=timeout)
-            if r.status_code == 200 and r.content[:2] == b"\xff\xd8":
-                jpg = r.content
-                yield (head + b"Content-Length: " + str(len(jpg)).encode() +
-                       b"\r\n\r\n" + jpg + b"\r\n")
-        except Exception:
-            pass                      # 上游抖动不终止整条流，下一轮重试
-        dt = time.time() - t0
-        if dt < period:
-            time.sleep(period - dt)
+            if self._upstream is not None:
+                for data in self._upstream.iter_content(chunk_size=16384):
+                    if self._closed:
+                        break
+                    if data:
+                        self._offer(data)
+            else:
+                head = ("--{0}\r\nContent-Type: image/jpeg\r\n").format(BOUNDARY).encode()
+                period = 1.0 / max(0.5, self._fps)
+                while not self._closed:
+                    t0 = time.time()
+                    try:
+                        r = requests.get(self._snapshot, timeout=2.0)
+                        if r.status_code == 200 and r.content[:2] == b"\xff\xd8":
+                            jpg = r.content
+                            self._offer(head + b"Content-Length: " +
+                                        str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
+                    except Exception:
+                        pass              # 上游抖动不终止整条流，下一轮重试
+                    dt = time.time() - t0
+                    if dt < period:
+                        time.sleep(period - dt)
+        except Exception as e:
+            logger.info("流 %s 读取线程结束：%s", self.cid, str(e)[:70])
+        finally:
+            self._offer(None)          # 结束标记
+
+    # ---- 网关侧 ----
+    def read(self, timeout=1.0):
+        """bytes=数据 / b''=暂时无数据 / None=流已结束"""
+        try:
+            return self._q.get(timeout=timeout)
+        except queue.Empty:
+            return b""
+
+    def expired(self):
+        return time.time() > self.deadline
+
+    def close(self):
+        """幂等：客户端断开、超时、上游结束都会走到这里，槽位一定释放"""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        if self._upstream is not None:
+            try:
+                self._upstream.close()
+            except Exception:
+                pass
+        if self._slot:
+            self._slot = False
+            _release_slot()
+        logger.info("流 %s 已关闭（当前并发 %s/%s）", self.cid,
+                    _STREAMS["n"], MAX_STREAMS)
 
 
-def stream(cid):
-    """取某路的 MJPEG 流。
+def open_stream(cid):
+    """打开某路的 MJPEG 流。
 
-    返回 (generator, media_type, reason)：
-      · 正常        -> (gen, mtype, None)
+    返回 (CameraStream, media_type, reason)：
+      · 正常        -> (st, mtype, None)
       · 该路不可达  -> (None, None, 原因)   ← **快速失败**，不让前端干等
       · 并发超限    -> (None, None, 原因)
     """
@@ -273,23 +336,15 @@ def stream(cid):
                 upstream.close()
             except Exception:
                 pass
-        return None, None, "并发画面数已达上限 {0}".format(MAX_STREAMS)
+        return None, None, "并发画面数已达上限 {0}（如为异常残留，重启网关容器即可清零）".format(
+            MAX_STREAMS)
     if upstream is not None:
-        gen = _relay_open(upstream, url=remote)
+        st = CameraStream(cid, upstream=upstream, remote_url=remote,
+                          idle=float(os.environ.get("CAM_STREAM_IDLE", "8")))
     else:
-        gen = _synth_from_snapshot(cam["snapshot"])
+        st = CameraStream(cid, snapshot=cam["snapshot"])
         mtype = "multipart/x-mixed-replace; boundary={0}".format(BOUNDARY)
-
-    def wrapped():
-        try:
-            for chunk in gen:
-                yield chunk
-        except Exception as e:                      # 客户端断开/上游挂掉都走这里
-            logger.info("流 %s 结束：%s", cid, str(e)[:80])
-        finally:
-            _release_slot()
-
-    return wrapped(), mtype, None
+    return st, mtype, None
 
 
 def stats():

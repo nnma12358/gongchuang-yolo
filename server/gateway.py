@@ -14,6 +14,7 @@
   · 一次只能分拣一件；分拣信息显示完成后再分拣下一件（否则不计分）
   · 按统一指令启动装置计时；比赛结束前不得接触装置；掉落 → 本轮结束
 """
+import asyncio
 import json
 import logging
 import os
@@ -22,7 +23,7 @@ import time
 from pathlib import Path
 
 import requests
-from fastapi import Body, FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -684,20 +685,43 @@ async def camera_frame(cid: str):
 
 
 @app.get("/api/cameras/{cid}/stream.mjpg")
-async def camera_stream(cid: str):
+async def camera_stream(cid: str, request: Request):
     """单路 MJPEG 流 —— 长连接，前端 <img src> 直接显示。
 
     没有原生 MJPEG 的源（深度图等）由 cameras 模块按帧率轮询单帧并封装 multipart，
-    前端因此对每一路都用同一套代码。该路不可达时**立即返回 503**，
-    不建立永不吐数据的连接（否则前端会一直转圈、客户端读超时）。
+    前端因此对每一路都用同一套代码。该路不可达时**立即返回 503**。
+
+    这里用**异步生成器轮询 request.is_disconnected()**，一旦客户端断开就关流、
+    释放并发槽位。此前用同步生成器时，Starlette 无法中断阻塞在上游 read 上的线程，
+    槽位会泄漏——刷新几次页面后 6 个槽位全被占满，之后所有画面都 503
+    （前端表现为一片黑/破图，但相机清单仍显示"在线"）。
     """
     try:
-        gen, mtype, reason = cameras.stream(cid)
+        st, mtype, reason = cameras.open_stream(cid)
     except KeyError:
         raise HTTPException(404, "未知相机: {0}".format(cid))
-    if gen is None:
+    if st is None:
         raise HTTPException(503, "画面不可用（{0}）：{1}".format(cid, reason or "未知原因"))
-    return StreamingResponse(gen, media_type=mtype,
+
+    loop = asyncio.get_event_loop()
+
+    async def gen():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                if st.expired():
+                    logger.info("流 %s 超过最长存活时间，主动结束", cid)
+                    break
+                chunk = await loop.run_in_executor(None, st.read, 1.0)
+                if chunk is None:          # 上游结束
+                    break
+                if chunk:
+                    yield chunk
+        finally:
+            st.close()                     # 幂等释放槽位
+
+    return StreamingResponse(gen(), media_type=mtype,
                              headers={"Cache-Control": "no-store, max-age=0",
                                       "X-Accel-Buffering": "no"})
 
