@@ -127,8 +127,13 @@ def propose_depth_bands(depth_u16, rgb_shape, roi=None, lo=12.0, hi=55.0,
     cnts = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cnts = cnts[-2] if len(cnts) == 3 else cnts[0]
     H, W = rgb_shape[:2]
-    dh, dw = mask.shape[:2]
+    # **缩放要按"整幅深度图 vs RGB"算**，不能按裁剪后的 mask 尺寸算：
+    # mask 是 ROI 裁剪过的，用它当分母会把坐标放大 (整幅/ROI) 倍
+    # （实测 ROI 470x330 时放大 1.36~1.45 倍，框全部偏离货物 —— 一度让我误判提议质量差）。
+    dh, dw = d.shape[:2]
     sx, sy = float(W) / dw, float(H) / dh
+    if x1 >= dw or y1 >= dh:            # ROI 用 RGB 坐标给出且分辨率一致时无需换算
+        pass
     out = []
     for c in cnts:
         x, y, w, h = cv2.boundingRect(c)
@@ -169,8 +174,13 @@ def propose(depth_u16, rgb_shape, height_mm=15.0, min_area=50, max_area=40000,
     cnts = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cnts = cnts[-2] if len(cnts) == 3 else cnts[0]
     H, W = rgb_shape[:2]
-    dh, dw = mask.shape[:2]
+    # **缩放要按"整幅深度图 vs RGB"算**，不能按裁剪后的 mask 尺寸算：
+    # mask 是 ROI 裁剪过的，用它当分母会把坐标放大 (整幅/ROI) 倍
+    # （实测 ROI 470x330 时放大 1.36~1.45 倍，框全部偏离货物 —— 一度让我误判提议质量差）。
+    dh, dw = d.shape[:2]
     sx, sy = float(W) / dw, float(H) / dh
+    if x1 >= dw or y1 >= dh:            # ROI 用 RGB 坐标给出且分辨率一致时无需换算
+        pass
     out = []
     for c in cnts:
         x, y, w, h = cv2.boundingRect(c)
