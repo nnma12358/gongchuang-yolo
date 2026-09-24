@@ -35,6 +35,7 @@ logger = logging.getLogger("cam2")
 PORT = int(os.environ.get("CAM2_PORT", "8103"))
 SOURCE = os.environ.get("CAM2_SOURCE", "auto").lower()
 CAM2_INDEX = int(os.environ.get("CAM2_INDEX", "0"))
+CAM2_SCAN_MAX = int(os.environ.get("CAM2_SCAN_MAX", "3"))   # auto 模式下扫描的最大设备号
 CAM2_URL = os.environ.get("CAM2_URL", "")
 WIDTH = int(os.environ.get("CAM2_WIDTH", "640"))
 HEIGHT = int(os.environ.get("CAM2_HEIGHT", "480"))
@@ -88,7 +89,10 @@ def _open_capture():
     else:                                   # auto
         if CAM2_URL:
             order.append(("url", CAM2_URL))
-        order.append(("index", CAM2_INDEX))
+        # 自动扫描设备号：UVC 相机在重新插拔/重启后 /dev/videoN 会变，
+        # 写死一个索引会在换号后直接失效（现场就遇到过 video0 -> video1）。
+        for idx in range(CAM2_SCAN_MAX + 1):
+            order.append(("index", idx))
         order.append(("synthetic", None))
 
     for mode, arg in order:
@@ -114,7 +118,7 @@ def _open_capture():
                     return cap, mode, str(arg), None
             cap.release()
         except Exception as e:
-            logger.warning("打开 %s(%s) 失败: %s", mode, arg, str(e)[:80])
+            logger.info("打开 %s(%s) 失败: %s", mode, arg, str(e)[:80])
     return None, "none", "", "无法打开任何相机源"
 
 

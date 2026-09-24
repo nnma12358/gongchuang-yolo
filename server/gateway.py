@@ -448,7 +448,7 @@ except Exception as _e:
 
 
 @app.get("/health")
-async def health():
+async def health(request: Request):
     vision = None
     try:
         vision = vision_get("/health", timeout=1.5).json()
@@ -463,6 +463,9 @@ async def health():
             # 导致在 Nano 上打开页面时顶部误报"未连接实际服务"、右侧面板全显示"无数据"。
             "deployed": True, "gateway_reachable": True, "pc_role": "gateway",
             "role": "Jetson 网关容器（页面由本容器托管）", "vision_url": VISION_URL,
+            # 页面由本容器托管时，"当前连接的服务"就是本容器自己；用请求的实际地址回填，
+            # 否则前端「连接设置」会显示"未连接"（明明已连接，误导人）。
+            "gateway_url": str(request.base_url).rstrip("/"),
             "cameras": cameras.camera_ids(), "vision": vision, "auto": AUTO["status"]}
 
 

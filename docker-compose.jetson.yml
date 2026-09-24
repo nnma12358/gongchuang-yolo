@@ -193,6 +193,10 @@ services:
     volumes:
       # 脚本只读挂载：改代码后 docker restart sort-cam2 即生效
       - ./deploy/jetson/cam2_node.py:/app/cam2_node.py:ro
+      # **挂活的 /dev**：容器默认的 /dev 是"创建那一刻的快照"，
+      # UVC 相机重新插拔/重启后设备号会变（现场遇到过 video0 → video1 → video0），
+      # 容器看不到新节点就会一直开不了相机。bind 挂载后新设备即时可见。
+      - /dev:/dev
     deploy:
       resources:
         limits:
