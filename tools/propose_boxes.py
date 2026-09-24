@@ -86,6 +86,69 @@ def merge_boxes(depth_boxes, rgb_boxes, iou_thres=0.25):
     return merged
 
 
+
+def propose_depth_bands(depth_u16, rgb_shape, roi=None, lo=12.0, hi=55.0,
+                        min_area=150, max_side=78, max_aspect=2.6,
+                        med_prot=14.0, close_px=3):
+    """深度"高度带通"提议框 —— 针对「白桌面 + 机械臂杂物」场景的主力通道。
+
+    与朴素的"比桌面中位数近就当选"相比，这里做两件关键的事：
+      1. **背景建模**：大核形态学闭运算得到背景面，凸起 = 背景 - 当前深度。
+         这样桌面本身的倾斜/起伏不会被误判（现场桌面中位 683mm，但远处地面 1267mm，
+         全局中位数根本不能当平面）。
+      2. **高度带通**：只取凸起在 [lo, hi]（默认 12~55mm）的像素。
+         货物凸起 20~40mm 落在带内；而机械臂/控制板/底座凸起 100mm+ 被上限排除 ——
+         这正是纯下限阈值会把机械臂当货物的原因。
+
+    再叠加形态学去斑 + 面积/长宽比/最长边过滤 + **组件中值凸起门槛**（去掉深度噪声
+    在物体边缘产生的细碎亮斑）。
+    """
+    import cv2
+    if depth_u16 is None:
+        return []
+    d = depth_u16.astype(np.float32)
+    valid = d > 0
+    if valid.sum() < 500:
+        return []
+    x1, y1, x2, y2 = roi if roi else (0, 0, d.shape[1], d.shape[0])
+    sub = d[y1:y2, x1:x2]
+    sub_valid = valid[y1:y2, x1:x2]
+    fill = sub.copy()
+    fill[~sub_valid] = 0
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 41))
+    bg = cv2.morphologyEx(fill, cv2.MORPH_CLOSE, k)
+    prot = bg - sub
+    mask = (sub_valid & (prot > lo) & (prot < hi)).astype(np.uint8) * 255
+    if mask.sum() == 0:
+        return []
+    kk = np.ones((close_px, close_px), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kk)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kk)
+    cnts = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = cnts[-2] if len(cnts) == 3 else cnts[0]
+    H, W = rgb_shape[:2]
+    dh, dw = mask.shape[:2]
+    sx, sy = float(W) / dw, float(H) / dh
+    out = []
+    for c in cnts:
+        x, y, w, h = cv2.boundingRect(c)
+        area = int((mask[y:y + h, x:x + w] > 0).sum())
+        if area < min_area:
+            continue
+        if max(w, h) > max_side or max(w, h) / max(1.0, min(w, h)) > max_aspect:
+            continue
+        vals = prot[y:y + h, x:x + w][mask[y:y + h, x:x + w] > 0]
+        if vals.size == 0 or float(np.median(vals)) < med_prot:
+            continue                       # 中值凸起不够 → 多半是噪声边缘
+        fill_ratio = area / float(w * h)
+        if fill_ratio < 0.5:
+            continue
+        out.append([(x + x1) * sx, (y + y1) * sy, (x + x1 + w) * sx, (y + y1 + h) * sy,
+                    float(np.median(vals)), float(area)])
+    out.sort(key=lambda b: -b[4])
+    return out
+
+
 def propose(depth_u16, rgb_shape, height_mm=15.0, min_area=50, max_area=40000,
             max_aspect=3.2, min_height=12.0, close_px=3, max_side=0):
     """返回 [(x1,y1,x2,y2,height_mm,area), ...]（RGB 像素坐标）"""
@@ -146,6 +209,10 @@ def main():
     ap.add_argument("--min-height", type=float, default=12.0, help="最小凸起高度 mm")
     ap.add_argument("--roi", default=None, help="工作区 ROI: x1,y1,x2,y2（限定 RGB 通道搜索范围）")
     ap.add_argument("--no-rgb", action="store_true", help="只用深度通道")
+    ap.add_argument("--bands", action="store_true",
+                    help="用深度高度带通通道（现场白桌面+机械臂场景首选）")
+    ap.add_argument("--band-lo", type=float, default=12.0, help="高度带通下限 mm")
+    ap.add_argument("--band-hi", type=float, default=55.0, help="高度带通上限 mm（排除机械臂等大凸起）")
     ap.add_argument("--write", action="store_true", help="写入 proposals/*.txt（默认只预览）")
     args = ap.parse_args()
 
@@ -165,8 +232,15 @@ def main():
         # 采集时深度已归一化为 8bit 伪彩色，无法直接测距 → 提示改用原始 16bit
         if dep is not None and dep.dtype != np.uint16 and dep.ndim == 3:
             dep = None
-        boxes = propose(dep, img.shape, args.height_mm, args.min_area, args.max_area,
-                        args.max_aspect, args.min_height, max_side=args.max_side)
+        if args.bands:
+            roi0 = tuple(int(v) for v in args.roi.split(",")) if args.roi else None
+            boxes = propose_depth_bands(dep, img.shape, roi=roi0,
+                                        lo=args.band_lo, hi=args.band_hi,
+                                        min_area=max(120, args.min_area),
+                                        max_side=args.max_side or 78)
+        else:
+            boxes = propose(dep, img.shape, args.height_mm, args.min_area, args.max_area,
+                            args.max_aspect, args.min_height, max_side=args.max_side)
         if not args.no_rgb:
             roi = None
             if args.roi:
