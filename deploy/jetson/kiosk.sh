@@ -18,6 +18,12 @@
 #   bash deploy/jetson/kiosk.sh --once          # 只开一次，退出后不重启
 #   KIOSK_URL=http://localhost bash deploy/jetson/kiosk.sh
 #   bash deploy/jetson/kiosk.sh --wait-only     # 只等网关就绪（供脚本串联）
+#   bash deploy/jetson/kiosk.sh --stop          # 停掉显示（并暂停自动重启）
+#
+# 显示模式（KIOSK_MODE）：
+#   max        默认：**最大化窗口**，GNOME 顶栏保留 → 随时点右上角查 WiFi/音量/设置
+#   kiosk      真全屏无边框（比赛展示用），需要 F11 或 --stop 才能退出
+#   两种模式都可用 F11 切换全屏/窗口，方便"平时能操作、比赛时干净"
 # 环境变量：
 #   KIOSK_URL          默认 http://localhost
 #   KIOSK_WAIT_S       等网关就绪最长秒数，默认 300
@@ -27,15 +33,19 @@
 set -uo pipefail
 
 URL="${KIOSK_URL:-http://localhost}"
+MODE="${KIOSK_MODE:-max}"          # max(默认,保留顶栏) | kiosk(真全屏)
+PAUSE_FLAG="${KIOSK_PAUSE:-/tmp/kiosk.pause}"
 WAIT_S="${KIOSK_WAIT_S:-300}"
 RESTART_S="${KIOSK_RESTART_S:-5}"
 LOG="${KIOSK_LOG:-/tmp/kiosk.log}"
 ONCE=0
 WAIT_ONLY=0
+STOP=0
 for a in "$@"; do
   case "$a" in
     --once) ONCE=1 ;;
     --wait-only) WAIT_ONLY=1 ;;
+    --stop) STOP=1 ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     http*) URL="$a" ;;
     *) echo "未知参数: $a"; exit 1 ;;
@@ -77,6 +87,15 @@ wait_gateway() {
   return 1
 }
 
+if [ "$STOP" = "1" ]; then
+  touch "$PAUSE_FLAG"                       # 暂停自动重启，否则马上又被拉起来
+  pkill -f chromium-browser 2>/dev/null || true
+  pkill -f "kiosk.sh" 2>/dev/null || true
+  DISPLAY="${DISPLAY:-:0}" xset dpms force off 2>/dev/null || true
+  echo "已停止显示，并写入暂停标记 $PAUSE_FLAG（想恢复：rm $PAUSE_FLAG 后重新运行本脚本）"
+  exit 0
+fi
+
 if [ "$WAIT_ONLY" = "1" ]; then wait_gateway; exit $?; fi
 
 # ---------- 2. 找浏览器 ----------
@@ -100,6 +119,7 @@ screen_on() {
 }
 
 # ---------- 4. 主循环 ----------
+rm -f "$PAUSE_FLAG"          # 手动/自启唤起时清掉暂停标记
 wait_x && screen_on
 wait_gateway
 
@@ -108,8 +128,10 @@ while true; do
   screen_on
   # --disable-gpu：Jetson Nano 上 chromium 反复报 "Error: Can't initialize nvrm channel"
   # （GPU 通道不可用）→ 让它直接走软件渲染，日志干净、kiosk 更稳
+  MODE_ARGS=(--start-maximized)          # max：最大化窗口，GNOME 顶栏保留（可查 WiFi）
+  [ "$MODE" = "kiosk" ] && MODE_ARGS=(--kiosk)
   "$BROWSER" \
-      --kiosk \
+      "${MODE_ARGS[@]}" \
       --disable-gpu \
       --noerrdialogs \
       --disable-infobars \
@@ -145,6 +167,10 @@ while true; do
   wait "$BPID" 2>/dev/null
   log "浏览器已退出（code=$?）"
   [ "$ONCE" = "1" ] && break
+  if [ -e "$PAUSE_FLAG" ]; then
+    log "检测到暂停标记 $PAUSE_FLAG → 不再自动重启（删除该文件即可恢复）"
+    break
+  fi
   log "  ${RESTART_S}s 后重新拉起…"
   sleep "$RESTART_S"
   wait_gateway
