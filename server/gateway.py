@@ -655,6 +655,17 @@ async def frame_jpg(draw: int = 1):
         raise HTTPException(503, "视觉容器不可达: {0}".format(str(e)[:100]))
 
 
+@app.get("/api/vision/detect/frame")
+async def vision_detect_frame_proxy():
+    """视觉容器"抓当前帧并识别"—— 供前端实时显示与回归脚本使用（此前只有容器内部有）"""
+    try:
+        r = vision_get("/detect/frame", timeout=25.0)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:150]}, status_code=503)
+
+
 @app.get("/api/vision/health")
 async def vision_health():
     try:
