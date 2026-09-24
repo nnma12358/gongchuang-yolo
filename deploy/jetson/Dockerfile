@@ -62,7 +62,8 @@ RUN pip3 install --no-cache-dir \
     && rm -rf /root/.cache/pip/*
 
 # ---- 网关脚本 + 公共模块 + 前端 SPA 产物 + 机器人侧客户端脚本 + 检测模型 ----
-COPY server/catalog.py server/detect_core.py server/gateway.py server/pose.py /app/
+# 注意：这里是**逐个文件** COPY，新增 server/*.py 必须同步加进来，否则容器里 import 会失败
+COPY server/catalog.py server/detect_core.py server/gateway.py server/pose.py server/cameras.py /app/
 COPY scripts/ /app/scripts/
 COPY build/ /app/build/
 COPY models/ /app/models/

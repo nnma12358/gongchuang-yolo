@@ -181,18 +181,33 @@ def _release_slot():
         _STREAMS["n"] = max(0, _STREAMS["n"] - 1)
 
 
-def _relay_remote(url, chunk=16384):
-    """原生 MJPEG：直接透传上游分片"""
-    r = requests.get(url, stream=True, timeout=(3.05, 10))
+def _relay_remote(url, chunk=16384, read_timeout=None):
+    """原生 MJPEG：直接透传上游分片。
+
+    现场实测的坑：上游（ROS 桥接）在**没有相机帧时不会关连接、也不吐数据**，
+    于是这里会一直挂着——浏览器那边表现为"画面永远转圈"，客户端读超时。
+    所以读超时（默认 CAM_STREAM_IDLE，8s）一到就结束这条流：前端 <img> 会触发
+    onerror 自动重连，页面能立刻给出反馈，而不是静默卡死。
+    """
+    idle = read_timeout or float(os.environ.get("CAM_STREAM_IDLE", "8"))
+    r = None
     try:
+        r = requests.get(url, stream=True, timeout=(3.05, idle))
         if r.status_code != 200:
             logger.warning("MJPEG 上游 HTTP %s: %s", r.status_code, url)
             return
         for data in r.iter_content(chunk_size=chunk):
             if data:
                 yield data
+    except Exception as e:
+        # 上游静默/断开都走这里：正常结束这条流，让客户端重连
+        logger.info("MJPEG 上游结束（%s）：%s", str(e)[:70], url)
     finally:
-        r.close()
+        if r is not None:
+            try:
+                r.close()
+            except Exception:
+                pass
 
 
 def _synth_from_snapshot(url, fps=STREAM_FPS, timeout=2.0):
@@ -215,18 +230,27 @@ def _synth_from_snapshot(url, fps=STREAM_FPS, timeout=2.0):
 
 
 def stream(cid):
-    """返回 (generator, media_type, is_remote)；并发超限返回 (None, None, False)"""
+    """取某路的 MJPEG 流。
+
+    返回 (generator, media_type, reason)：
+      · 正常        -> (gen, mtype, None)
+      · 该路不可达  -> (None, None, 原因)   ← **快速失败**，不让前端干等
+      · 并发超限    -> (None, None, 原因)
+    """
     cam = _BY_ID.get(cid)
     if cam is None:
         raise KeyError(cid)
+    # 先探一次该路是否可用：不可用就直接拒绝，避免建一条永不吐数据的连接
+    # （现场实测：ROS 桥接在没有相机帧时既不关连接也不发数据）
+    st = probe(cid)
+    if not st.get("ready"):
+        return None, None, st.get("error") or "该路当前不可达"
     if not _acquire_slot():
         logger.warning("并发流已达上限 %s，拒绝 %s", MAX_STREAMS, cid)
-        return None, None, False
+        return None, None, "并发画面数已达上限 {0}".format(MAX_STREAMS)
     remote = cam.get("stream")
     if remote:
         gen = _relay_remote(remote)
-        mtype = "multipart/x-mixed-replace; boundary=--BoundaryString"
-        # 上游分片已含完整 multipart 帧（含自身 boundary），直接按原类型转发
         mtype = "multipart/x-mixed-replace"
     else:
         gen = _synth_from_snapshot(cam["snapshot"])
@@ -241,7 +265,7 @@ def stream(cid):
         finally:
             _release_slot()
 
-    return wrapped(), mtype, bool(remote)
+    return wrapped(), mtype, None
 
 
 def stats():

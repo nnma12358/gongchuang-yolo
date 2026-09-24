@@ -128,6 +128,9 @@
 	<div class="pane-head">
 		<span class="pane-title">{title}</span>
 		<select class="pane-src" bind:value={value}>
+			{#if cameras.length === 0}
+				<option value="" disabled>（无可用画面源：未连接 Jetson）</option>
+			{/if}
 			{#each cameras as c (c.id)}
 				<option value={c.id}>{c.name}{c.ready ? '' : '（不可达）'}</option>
 			{/each}
@@ -162,7 +165,14 @@
 				{/key}
 			{/if}
 		{:else}
-			<div class="pane-holder"><p>未选择画面源</p></div>
+			<div class="pane-holder">
+				{#if cameras.length === 0}
+					<p>未连接 Jetson 服务</p>
+					<p class="sub">在下方「连接设置」填写 Jetson 地址后点「连接」，或在左侧选择本机摄像头</p>
+				{:else}
+					<p>未选择画面源</p>
+				{/if}
+			</div>
 		{/if}
 
 		{#if online || (isLocal && localStream)}

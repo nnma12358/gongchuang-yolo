@@ -688,15 +688,15 @@ async def camera_stream(cid: str):
     """单路 MJPEG 流 —— 长连接，前端 <img src> 直接显示。
 
     没有原生 MJPEG 的源（深度图等）由 cameras 模块按帧率轮询单帧并封装 multipart，
-    前端因此对每一路都用同一套代码。
+    前端因此对每一路都用同一套代码。该路不可达时**立即返回 503**，
+    不建立永不吐数据的连接（否则前端会一直转圈、客户端读超时）。
     """
     try:
-        gen, mtype, _remote = cameras.stream(cid)
+        gen, mtype, reason = cameras.stream(cid)
     except KeyError:
         raise HTTPException(404, "未知相机: {0}".format(cid))
     if gen is None:
-        raise HTTPException(503, "并发画面数已达上限（{0}），请先关闭其它画面".format(
-            cameras.stats()["max_streams"]))
+        raise HTTPException(503, "画面不可用（{0}）：{1}".format(cid, reason or "未知原因"))
     return StreamingResponse(gen, media_type=mtype,
                              headers={"Cache-Control": "no-store, max-age=0",
                                       "X-Accel-Buffering": "no"})
