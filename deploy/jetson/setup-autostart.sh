@@ -123,6 +123,32 @@ X-GNOME-Autostart-enabled=true
 Terminal=false
 EOF
   echo "  ✓ 已写入 $KIOSK_FILE"
+
+  # ---- 桌面快捷方式：不敲命令就能"退出大屏 / 重新进入大屏" ----
+  DESK_DIR="$HOME/Desktop"
+  mkdir -p "$DESK_DIR"
+  cat > "$DESK_DIR/sort-display-stop.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=退出分拣大屏（回到桌面）
+Comment=停止全屏显示并暂停自动重启，方便检查 WiFi / 设置
+Exec=bash $KIOSK_SH --stop
+Terminal=false
+Icon=application-exit
+EOF
+  cat > "$DESK_DIR/sort-display-start.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=进入分拣大屏
+Comment=网关就绪后打开前端显示
+Exec=bash $KIOSK_SH
+Terminal=false
+Icon=video-display
+EOF
+  chmod +x "$DESK_DIR"/sort-display-*.desktop 2>/dev/null || true
+  gio set "$DESK_DIR/sort-display-stop.desktop" metadata::trusted true 2>/dev/null || true
+  gio set "$DESK_DIR/sort-display-start.desktop" metadata::trusted true 2>/dev/null || true
+  echo "  ✓ 已创建桌面快捷方式：退出分拣大屏 / 进入分拣大屏"
   echo "  ✓ kiosk 脚本: $KIOSK_SH（URL 可用 KIOSK_URL 覆盖）"
 fi
 
