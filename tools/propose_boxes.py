@@ -34,6 +34,7 @@ def load_depth_png(path):
 
 def propose_rgb_dark(img_bgr, roi=None, min_side=14, max_side=130, max_aspect=2.0,
                      dark_ratio=0.72):
+    """白桌面上的深色货物（黑三棱柱/黑球/黑正方体等）—— 这些在深度图上常没有回波"""
     """RGB 通道：白桌面上的深色货物（黑三棱柱/黑球/黑正方体）在深度图上常常没有回波
     （红外被黑色吸收），但 RGB 上与桌面反差很大。用「桌面亮度 × dark_ratio」阈值找暗块。"""
     import cv2
@@ -86,7 +87,7 @@ def merge_boxes(depth_boxes, rgb_boxes, iou_thres=0.25):
 
 
 def propose(depth_u16, rgb_shape, height_mm=15.0, min_area=50, max_area=40000,
-            max_aspect=3.2, min_height=12.0, close_px=3):
+            max_aspect=3.2, min_height=12.0, close_px=3, max_side=0):
     """返回 [(x1,y1,x2,y2,height_mm,area), ...]（RGB 像素坐标）"""
     import cv2
     if depth_u16 is None:
@@ -115,6 +116,10 @@ def propose(depth_u16, rgb_shape, height_mm=15.0, min_area=50, max_area=40000,
             continue
         if max(w, h) / max(1.0, min(w, h)) > max_aspect:
             continue
+        # 尺寸上限：现场货物只有 15~60px，而机械臂/控制板/底座/线缆会产生
+        # 100~280px 的大块。不过滤的话候选框一半是杂物，人工复核反而更累。
+        if max_side and max(w * sx, h * sy) > max_side:
+            continue
         sub = d[y:y + h, x:x + w]
         sv = sub[(sub > 0) & (sub < table - min_height)]
         if sv.size == 0:
@@ -132,6 +137,9 @@ def main():
     ap.add_argument("--root", default="data/real_overhead")
     ap.add_argument("--session", required=True)
     ap.add_argument("--height-mm", type=float, default=15.0, help="高于桌面多少 mm 算货物")
+    ap.add_argument("--max-side", type=int, default=0,
+                    help="候选框最长边上限（像素，0=不限）。现场货物 15~60px，"
+                         "建议 70~90：可滤掉机械臂/控制板/线缆等大块杂物")
     ap.add_argument("--min-area", type=int, default=50, help="最小框面积（RGB 像素）")
     ap.add_argument("--max-area", type=int, default=40000)
     ap.add_argument("--max-aspect", type=float, default=3.2)
@@ -158,12 +166,13 @@ def main():
         if dep is not None and dep.dtype != np.uint16 and dep.ndim == 3:
             dep = None
         boxes = propose(dep, img.shape, args.height_mm, args.min_area, args.max_area,
-                        args.max_aspect, args.min_height)
+                        args.max_aspect, args.min_height, max_side=args.max_side)
         if not args.no_rgb:
             roi = None
             if args.roi:
                 roi = tuple(int(v) for v in args.roi.split(","))
-            boxes = merge_boxes(boxes, propose_rgb_dark(img, roi=roi))
+            boxes = merge_boxes(boxes, propose_rgb_dark(img, roi=roi,
+                                                        max_side=args.max_side or 130))
         summary[name] = {"n": len(boxes),
                          "heights_mm": [round(b[4], 1) for b in boxes]}
         n_box += len(boxes)
