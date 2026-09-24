@@ -49,6 +49,7 @@ STATE = {"mode": SOURCE, "source": "", "fps": 0.0, "size": None,
 # 内容冻结检测：相机被拔出/驱动卡住时，读取仍可能返回同一张图，
 # 只看 fps 会误判为"正常"。记录内容最后一次变化的时间。
 _CHANGE = {"sig": None, "ts": 0.0}
+_SYNTH_RETRY = {"ts": 0.0}   # 测试图模式下重试真机的时间戳
 _COUNTER = {"t0": time.time(), "n": 0}
 
 
@@ -101,7 +102,14 @@ def _open_capture():
                 cap.set(cv2.CAP_PROP_FPS, FPS)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             if cap.isOpened():
-                ok, _ = cap.read()
+                # 预热：设备刚上电或 UVC 未就绪时，前几帧常读不到（select timeout），
+                # 多试几次再判定失败，避免"明明有相机却一直用测试图"。
+                ok = False
+                for _ in range(12):
+                    ok, _f = cap.read()
+                    if ok:
+                        break
+                    time.sleep(0.25)
                 if ok:
                     return cap, mode, str(arg), None
             cap.release()
@@ -122,6 +130,16 @@ def capture_loop():
         t0 = time.time()
         frame = None
         if mode == "synthetic":
+            # 每 15s 再试一次真实相机：设备后插/后上电、或启动时没就绪的情况都能自愈
+            if time.time() - _SYNTH_RETRY["ts"] >= 15.0:
+                _SYNTH_RETRY["ts"] = time.time()
+                cap2, mode2, src2, err2 = _open_capture()
+                if cap2 is not None and mode2 != "synthetic":
+                    cap, mode, source, err = cap2, mode2, src2, err2
+                    with LOCK:
+                        STATE.update({"mode": mode, "source": source, "error": None})
+                    logger.info("第二路相机已接入真实设备：mode=%s source=%s", mode, source)
+                    continue
             frame = _synthetic_frame(time.time())
         else:
             if cap is None:
