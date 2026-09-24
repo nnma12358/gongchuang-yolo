@@ -46,6 +46,9 @@ LOCK = threading.Lock()
 FRAMES = {"jpg": None, "ts": 0.0, "seq": 0}
 STATE = {"mode": SOURCE, "source": "", "fps": 0.0, "size": None,
          "frames": 0, "error": None, "started": time.time()}
+# 内容冻结检测：相机被拔出/驱动卡住时，读取仍可能返回同一张图，
+# 只看 fps 会误判为"正常"。记录内容最后一次变化的时间。
+_CHANGE = {"sig": None, "ts": 0.0}
 _COUNTER = {"t0": time.time(), "n": 0}
 
 
@@ -147,6 +150,13 @@ def capture_loop():
                 continue
         if frame is not None:
             h, w = frame.shape[:2]
+            try:                      # 记录内容是否真的变了（廉价抽样指纹）
+                sig = int(frame[::16, ::16].sum())
+            except Exception:
+                sig = 0
+            if _CHANGE["sig"] != sig:
+                _CHANGE["sig"] = sig
+                _CHANGE["ts"] = time.time()
             ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
             if ok:
                 with LOCK:
@@ -177,6 +187,8 @@ def _health():
                    "name": NAME, "port": PORT})
     st["ok"] = st["jpg_age_s"] is not None and st["jpg_age_s"] < 5.0
     st["synthetic"] = (st["mode"] == "synthetic")
+    # 画面内容多久没变化（秒）—— 相机挂了但读取不报错时会持续增大
+    st["frozen_s"] = round(time.time() - _CHANGE["ts"], 2) if _CHANGE["ts"] else None
     return st
 
 

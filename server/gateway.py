@@ -458,6 +458,11 @@ async def health():
     # Nano 的 IP 随所连 WiFi 热点变化，PC 端需要能确认扫描到的就是本网关，而不是别的 HTTP 服务。
     return {"ok": True, "service": "sort-gateway", "name": "智能分拣网关",
             "port": int(os.environ.get("PORT", "80")),
+            # 下面这几个字段是给前端 SPA 判断"是否连上实际服务"用的：
+            # 页面由网关自己托管时，网关当然可达 —— 之前缺这几个字段，
+            # 导致在 Nano 上打开页面时顶部误报"未连接实际服务"、右侧面板全显示"无数据"。
+            "deployed": True, "gateway_reachable": True, "pc_role": "gateway",
+            "role": "Jetson 网关容器（页面由本容器托管）", "vision_url": VISION_URL,
             "cameras": cameras.camera_ids(), "vision": vision, "auto": AUTO["status"]}
 
 

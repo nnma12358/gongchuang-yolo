@@ -47,6 +47,31 @@ FRAMES = {"color": None, "depth": None, "color_ts": 0.0, "depth_ts": 0.0,
           "color_seq": 0, "depth_seq": 0, "color_fps": 0.0, "depth_fps": 0.0}
 LOCK = threading.Lock()
 _COUNTERS = {"color_t0": time.time(), "color_n": 0, "depth_t0": time.time(), "depth_n": 0}
+# 内容冻结检测：相机/驱动卡死时，ROS 帧仍可能按原频率到达（内容是同一张图），
+# 于是"采集 fps 正常、画面却一动不动"。这里记录**内容最后一次变化**的时间。
+_CHANGE = {"color_sig": None, "color_change_ts": 0.0,
+           "depth_sig": None, "depth_change_ts": 0.0}
+
+
+def _signature(arr):
+    """极廉价的内容指纹（隔行隔列抽样求和），用于判断相邻帧是否"完全一样"""
+    try:
+        return int(arr[::16, ::16].sum())
+    except Exception:
+        return 0
+
+
+def _mark_change(key, arr):
+    sig = _signature(arr)
+    st = _CHANGE
+    if st.get(key + "_sig") != sig:
+        st[key + "_sig"] = sig
+        st[key + "_change_ts"] = time.time()
+
+
+def _frozen_s(key):
+    ts = _CHANGE.get(key + "_change_ts") or 0.0
+    return None if ts <= 0 else round(time.time() - ts, 2)
 
 
 def _seq_of(msg, key):
@@ -114,6 +139,7 @@ def start_ros():
             logger.warning("彩色解码失败: {0}".format(e)); return
         with LOCK:
             FRAMES.update({"color": bgr, "color_ts": time.time(), "color_seq": _seq_of(msg, "color")})
+            _mark_change("color", bgr)          # 记录"内容是否真的变了"
         _COUNTERS["color_n"] += 1
         now = time.time()
         if now - _COUNTERS["color_t0"] >= 2.0:
@@ -127,6 +153,7 @@ def start_ros():
             logger.warning("深度解码失败: {0}".format(e)); return
         with LOCK:
             FRAMES.update({"depth": d, "depth_ts": time.time(), "depth_seq": _seq_of(msg, "depth")})
+            _mark_change("depth", d)
         _COUNTERS["depth_n"] += 1
         now = time.time()
         if now - _COUNTERS["depth_t0"] >= 2.0:
@@ -248,6 +275,7 @@ def main():
     app = FastAPI(title="ros2-depth-http", docs_url=None, redoc_url=None)
 
     @app.get("/health")
+    @app.get("/api/meta")
     def health():
         now = time.time()
         with LOCK:
@@ -258,6 +286,10 @@ def main():
                 "color_age": round(now - FRAMES["color_ts"], 3) if FRAMES["color_ts"] else -1.0,
                 "depth_age": round(now - FRAMES["depth_ts"], 3) if FRAMES["depth_ts"] else -1.0,
                 "color_fps": FRAMES["color_fps"], "depth_fps": FRAMES["depth_fps"],
+                # 内容多久没变（秒）。相机/驱动卡死时 fps 与 age 都正常，只有这两个值会持续增大，
+                # 供网关判"画面冻结"，避免把一张不动的图报成"在线"。
+                "color_frozen_s": _frozen_s("color"),
+                "depth_frozen_s": _frozen_s("depth"),
                 "topics": {"color": COLOR_TOPIC, "depth": DEPTH_TOPIC},
             }
 

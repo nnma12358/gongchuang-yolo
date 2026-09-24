@@ -39,6 +39,8 @@ _REGISTRY = [
         "name": os.environ.get("CAM_MAIN_NAME", "顶置相机 · 实时画面"),
         "snapshot": os.environ.get("CAM_MAIN_SNAPSHOT", BRIDGE + "/color.jpg"),
         "stream": os.environ.get("CAM_MAIN_STREAM", BRIDGE + "/color.mjpg"),
+        "status": BRIDGE + "/api/meta",
+        "frozen_field": "color_frozen_s",
         "detail": "Astra 彩色（ROS 桥接直出，无标记）",
     },
     {
@@ -46,6 +48,10 @@ _REGISTRY = [
         "name": os.environ.get("CAM_MARKED_NAME", "顶置相机 · 识别标记"),
         "snapshot": os.environ.get("CAM_MARKED_SNAPSHOT", VISION + "/frame.jpg?draw=1"),
         "stream": os.environ.get("CAM_MARKED_STREAM", VISION + "/stream.mjpg"),
+        # 识别标记画面来自同一台相机（视觉容器读的就是桥接的流），
+        # 所以冻结状态沿用桥接的彩色源判断。
+        "status": BRIDGE + "/api/meta",
+        "frozen_field": "color_frozen_s",
         "detail": "视觉容器输出，叠加检测框与中文标签",
     },
     {
@@ -53,6 +59,8 @@ _REGISTRY = [
         "name": os.environ.get("CAM_DEPTH_NAME", "深度图 · 2.5D"),
         "snapshot": os.environ.get("CAM_DEPTH_SNAPSHOT", BRIDGE + "/depth_preview.jpg"),
         "stream": None,
+        "status": BRIDGE + "/api/meta",
+        "frozen_field": "depth_frozen_s",
         "detail": "深度伪彩色，用于高度/凸起判断",
     },
     {
@@ -60,6 +68,8 @@ _REGISTRY = [
         "name": os.environ.get("CAM2_NAME", "第二路相机"),
         "snapshot": os.environ.get("CAM2_SNAPSHOT", CAM2 + "/frame.jpg"),
         "stream": os.environ.get("CAM2_STREAM", CAM2 + "/stream.mjpg"),
+        "status": CAM2 + "/health",
+        "frozen_field": "frozen_s",
         "detail": os.environ.get("CAM2_DETAIL", "sort-cam2 服务（USB 相机 / 外部流）"),
     },
 ]
@@ -110,6 +120,25 @@ def _jpeg_size(data):
     return None, None
 
 
+FROZEN_WARN_S = float(os.environ.get("CAM_FROZEN_WARN_S", "5"))
+
+
+def _frozen_of(cam):
+    """问源端"画面内容多久没变化"（秒）；取不到返回 None（不误报）"""
+    url = cam.get("status")
+    field = cam.get("frozen_field")
+    if not url or not field:
+        return None
+    try:
+        r = requests.get(url, timeout=PROBE_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        v = r.json().get(field)
+        return None if v is None else round(float(v), 2)
+    except Exception:
+        return None
+
+
 def probe(cid, force=False):
     """探测某路是否可用（带缓存）：返回 {ready, size, latency_ms, detail/error}"""
     cam = _BY_ID.get(cid)
@@ -132,6 +161,11 @@ def probe(cid, force=False):
             info["error"] = "HTTP {0}".format(r.status_code)
     except Exception as e:
         info["error"] = str(e)[:120]
+    # 冻结检测：相机/驱动卡死时，单帧仍能取到（只是内容不变），fps 也照常，
+    # 所以必须问源端的"内容多久没变"。现场实测就出现过"显示在线、画面一动不动"。
+    info["frozen_s"] = _frozen_of(cam)
+    if info["frozen_s"] is not None and info["frozen_s"] > FROZEN_WARN_S:
+        info["stale"] = True
     with _PROBE_LOCK:
         _PROBE[cid] = (time.time(), info)
     return info
@@ -152,6 +186,8 @@ def describe(force=False):
             "ready": bool(st.get("ready")),
             "size": st.get("size"),
             "latency_ms": st.get("latency_ms"),
+            "frozen_s": st.get("frozen_s"),
+            "stale": bool(st.get("stale")),
             "error": st.get("error"),
         })
     return out

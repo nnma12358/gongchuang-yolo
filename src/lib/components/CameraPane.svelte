@@ -39,6 +39,11 @@
 		if (!cam) return { text: '未选择画面源', ok: false };
 		if (!cam.ready) return { text: cam.error ? `不可达：${cam.error}` : '不可达', ok: false };
 		const size = cam.size && cam.size[0] ? `${cam.size[0]}×${cam.size[1]}` : '';
+		// 冻结：单帧取得到、fps 也正常，但画面内容长时间没变（相机/驱动卡死）。
+		// 实测踩过：显示"在线·9.4fps"其实画面一动不动，必须显式告警出来。
+		if (cam.stale) {
+			return { text: `画面冻结 ${Math.round(cam.frozen_s || 0)}s · 相机无新帧`, ok: false, warn: true };
+		}
 		return { text: ['在线', size, cam.latency_ms ? `${cam.latency_ms}ms` : ''].filter(Boolean).join(' · '), ok: true };
 	});
 
@@ -181,7 +186,7 @@
 	</div>
 
 	<div class="pane-foot">
-		<span class="pane-status {status.ok ? 'ok' : 'err'}">{status.text}</span>
+		<span class="pane-status {status.ok ? 'ok' : status.warn ? 'warn' : 'err'}">{status.text}</span>
 		{#if errorText}<span class="pane-err">{errorText}</span>{/if}
 		<span class="spacer"></span>
 		<button class="mini" onclick={doCapture} title="抓拍当前画面">📸</button>
@@ -300,6 +305,10 @@
 	}
 	.pane-status.err {
 		color: #ffb1b1;
+	}
+	.pane-status.warn {
+		color: #ffd479;
+		font-weight: 600;
 	}
 	.pane-err {
 		color: #ffcf8a;
