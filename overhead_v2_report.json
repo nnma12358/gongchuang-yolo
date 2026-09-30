@@ -1,0 +1,21 @@
+{
+  "date": "2026-09-30",
+  "stage": "现场尺度微调 v2（60 轮）",
+  "dataset": {"mix_v3": 470, "synth_realgeo": 600, "real_labeled": 41, "real_negatives": 132,
+              "train": 1054, "val": 189, "note": "真实标注为机器草稿+货物区过滤，待人工复核"},
+  "training": {"epochs": 60, "batch": 8, "workers": 4, "cache": false, "amp": true,
+               "imgsz": 640, "base": "runs/best_v3_gpu.pt",
+               "val_mAP50": 0.9610, "val_mAP50_95": 0.8403,
+               "mem_peak_gb": 3.7, "cgroup_cap_gb": 5,
+               "weights": "runs/best_overhead_v2.pt"},
+  "export": {"fp32": "exports_overhead_v2_fp32.onnx", "input_shape": [1,3,640,640],
+             "output_shape": [1,5,8400], "note": "与设备端 yolo_server 期望一致，trtexec 重建无需改代码"},
+  "measured@0.35": {
+    "真实俯拍帧41张": {"现役": {"TP": 0, "FP": 0, "FN": 184, "精确率": "0%", "召回率": "0%"},
+                     "新模型": {"TP": 28, "FP": 4, "FN": 156, "精确率": "88%", "召回率": "15%",
+                                "平均置信": 0.524, "最高置信": 0.683}},
+    "24张实拍集": {"现役": "22/24", "新模型": "24/24"}},
+  "结论": "召回 0%→15%（精确率 88%、假检 0.1/帧），24 张实拍集无退化。召回仍偏低，根因是真实标注只有 41 张同一姿势且为机器草稿；"
+          "下一步靠(c)扩充姿势 + 人工复核提升。",
+  "deployed": false
+}
