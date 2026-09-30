@@ -38,6 +38,12 @@ def main():
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--imgsz", type=int, default=None)
     ap.add_argument("--batch", type=int, default=None)
+    # 内存相关（默认取 config，config 没有再取这里的保守值）—— 见 tools/train_safe.sh
+    ap.add_argument("--workers", type=int, default=None, help="dataloader 线程数（每个都占内存，OOM 时优先下调）")
+    ap.add_argument("--cache", default=None, choices=["ram", "disk", "none"],
+                    help="数据集缓存；ram 最吃内存（大图集容易 OOM），默认 none")
+    ap.add_argument("--amp", type=int, default=None, choices=[0, 1],
+                    help="1=混合精度（省显存，推荐）；0=全精度")
     ap.add_argument("--device", default=None, help="0=GPU, cpu=CPU, 缺省自动")
     ap.add_argument("--resume", default="", help="runs/detect/train/weights/last.pt")
     args = ap.parse_args()
@@ -98,8 +104,10 @@ def main():
         freeze=int(cfg.get("freeze", 0)),
         # 小目标：关闭矩形推理，保证 letterbox 后尺度一致
         rect=False,
-        cache=bool(aug.get("cache", False)),
-        workers=int(aug.get("workers", 8)),
+        # 内存相关：config 的 aug.cache/aug.workers 为准，CLI 可覆盖
+        cache=(False if (args.cache and args.cache in ("none", "false")) else
+               (args.cache if args.cache else bool(aug.get("cache", False)))),
+        workers=int(args.workers if args.workers is not None else aug.get("workers", 4)),
         patience=int(cfg.get("patience", 30)),
         # 注意：ultralytics 会把“相对 project”拼到 SETTINGS.runs_dir 后面
         # （runs/detect/runs/detect/train），必须用绝对路径才能固定输出位置。
@@ -111,7 +119,7 @@ def main():
         # AMP：默认关闭。ultralytics 8.4 的 AMP 自检会去 GitHub 下载 yolo26n.pt，
         # 国内网络不可达时该自检会空转数分钟（并非训练卡住）。
         # yolov8n@640/batch16 在 6GB 显存上不依赖 AMP。
-        amp=bool(cfg.get("amp", False)),
+        amp=bool(args.amp if args.amp is not None else cfg.get("amp", True)),
     )
 
     best = os.path.join(os.path.abspath("runs/detect"), "train", "weights", "best.pt")

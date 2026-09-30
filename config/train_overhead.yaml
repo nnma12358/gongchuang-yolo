@@ -14,15 +14,20 @@ detection_classes: ["goods"]
 model: "yolov8n"
 imgsz: 640
 epochs: 60
-batch: 16
+batch: 8              # 6G 笔记本卡 + 与主机共享内存：8 更稳（原 16）
+amp: true             # 混合精度：显存与内存都省一半左右（train_detection 读顶层 amp）
 patience: 20
 optimizer: "AdamW"
 lr0: 0.0005           # 微调：比从头训练低一档
 lrf: 0.01
 warmup_epochs: 2.0
 freeze: 0
-amp: false            # 关掉 AMP 自检（该自检需访问 GitHub 下载 yolo26n.pt）
+# 注：AMP 的"自检"需要联网下载 yolo26n.pt，脚本里已用 YOLO_AUTOINSTALL=false 关掉；
+#     这里 amp 指训练精度，true=混合精度（省显存/内存，推荐）
 aug:
+  # ↓ 这两项由 train_detection.py 从 aug 块读取（放在顶层不生效，已踩过）
+  workers: 4          # dataloader 线程；每个都占内存（实测峰值 3.7G）；OOM 时优先降到 2
+  cache: false        # 不要把数据集缓存进内存（大图集容易把主机拖进 OOM）
   hsv_h: 0.04
   hsv_s: 0.5
   hsv_v: 0.4
@@ -37,6 +42,6 @@ aug:
   copy_paste: 0.0
   erase: 0.35
   cos_lr: true
-  workers: 8
+  # （原这里又写了一次 workers: 8，会覆盖上面的设置 —— 已删除，见 aug 开头的说明）
 acceptance:
   detect_map50: 0.80
